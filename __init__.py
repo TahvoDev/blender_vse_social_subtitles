@@ -1,41 +1,26 @@
 """
-Auto-Subtitles VSE Add-on for Blender 5.2
+Auto-Subtitles VSE Add-on for Blender
 Transcribes selected audio/video strips using faster-whisper and places
 TEXT strips in the VSE timeline, one block per spoken phrase.
-"""
 
-bl_info = {
-    "name": "Auto-Subtitles",
-    "author": "",
-    "version": (1, 1, 0),
-    "blender": (5, 2, 0),
-    "location": "Video Sequence Editor > N-Panel > Auto-Subtitles",
-    "description": "Transcribe audio/video strips and generate subtitle text strips",
-    "category": "Sequencer",
-}
+Runtime dependencies live in a private venv (see bootstrap.py) built with uv
+from Blender's own Python; the transcription worker runs in that venv so no ML
+library is ever loaded inside Blender's process.
+"""
 
 import bpy
 import os
-import sys
-import site
 import json
 import queue
+import tempfile
 import threading
 import subprocess
-import tempfile
-import importlib
 from pathlib import Path
 
-
-# ---------------------------------------------------------------------------
-# sys.path patch – Blender 5.2 strips user site-packages at startup
-# ---------------------------------------------------------------------------
-
-def _patch_sys_path():
-    user_site = site.getusersitepackages()
-    if user_site not in sys.path:
-        sys.path.insert(0, user_site)
-    importlib.invalidate_caches()
+try:
+    from . import bootstrap
+except ImportError:  # direct execution / legacy layout
+    import bootstrap
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +102,18 @@ def _collect_selected_clips(scene):
     return clips
 
 
+def _redraw_all():
+    screen = getattr(bpy.context, "screen", None)
+    if not screen:
+        return
+    for area in screen.areas:
+        if area.type == "SEQUENCE_EDITOR":
+            area.tag_redraw()
+            for region in area.regions:
+                if region.type == "UI":
+                    region.tag_redraw()
+
+
 # ---------------------------------------------------------------------------
 # Global job state
 # ---------------------------------------------------------------------------
@@ -145,7 +142,19 @@ class _JobState:
                 pass
 
 
-_job = _JobState()
+class _SetupState:
+    __slots__ = ("running", "progress", "status", "error", "queue")
+
+    def __init__(self):
+        self.running  = False
+        self.progress = 0.0
+        self.status   = ""
+        self.error    = ""
+        self.queue    = queue.Queue()
+
+
+_job   = _JobState()
+_setup = _SetupState()
 
 
 # ---------------------------------------------------------------------------
@@ -268,12 +277,38 @@ def _timer_callback():
             _job.status  = "Done!"
 
     if changed:
-        for area in bpy.context.screen.areas:
-            if area.type == "SEQUENCE_EDITOR":
-                area.tag_redraw()
-            for region in area.regions:
-                if region.type == "UI":
-                    region.tag_redraw()
+        _redraw_all()
+
+    return 0.25
+
+
+def _setup_timer():
+    global _setup
+    if not _setup.running:
+        return None  # unregister timer
+
+    changed = False
+    while True:
+        try:
+            msg = _setup.queue.get_nowait()
+        except queue.Empty:
+            break
+        changed = True
+        kind = msg.get("kind")
+        if kind == "progress":
+            _setup.progress = msg["value"]
+            _setup.status   = msg["text"]
+        elif kind == "error":
+            _setup.error   = msg["text"]
+            _setup.status  = "Setup failed"
+            _setup.running = False
+        elif kind == "done":
+            _setup.progress = 1.0
+            _setup.status   = "Ready"
+            _setup.running  = False
+
+    if changed:
+        _redraw_all()
 
     return 0.25
 
@@ -395,7 +430,10 @@ def _find_cuda_lib_dirs():
 
 
 def _build_worker_env(device):
-    env = os.environ.copy()
+    # bootstrap.clean_env() isolates the venv interpreter from Blender's/host's
+    # PYTHONPATH and user site-packages, which would otherwise shadow the pinned
+    # dependency versions.
+    env = bootstrap.clean_env()
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -407,11 +445,17 @@ def _build_worker_env(device):
 
 def _launch_worker(args_path, result_path, device="cpu"):
     global _job
+    vpy = bootstrap.venv_python()
+    if not Path(vpy).exists():
+        _job.queue.put({"kind": "error",
+                        "text": "Dependencies not installed. Click 'Set up dependencies'."})
+        return
     env = _build_worker_env(device)
 
     def _run():
         worker = str(Path(__file__).parent / "transcribe_worker.py")
-        cmd    = [sys.executable, worker, args_path, result_path]
+        # -I = isolated mode: ignores PYTHONPATH/PYTHONHOME and user site-packages.
+        cmd    = [str(vpy), "-I", worker, args_path, result_path]
         print(f"[Auto-Subtitles] Launching worker: {' '.join(cmd)}")
         try:
             proc = subprocess.Popen(
@@ -466,6 +510,46 @@ def _launch_worker(args_path, result_path, device="cpu"):
 # Operators
 # ---------------------------------------------------------------------------
 
+class AS_OT_Setup(bpy.types.Operator):
+    bl_idname      = "as.setup"
+    bl_label       = "Set up dependencies"
+    bl_description = "Download and install the transcription runtime (one-time, ~2.5 GB)"
+
+    def execute(self, ctx):
+        global _setup
+        if _setup.running:
+            self.report({"WARNING"}, "Dependency setup already running")
+            return {"CANCELLED"}
+        if not bootstrap.online_access():
+            self.report({"ERROR"},
+                        "Enable online access: Preferences > Get Extensions")
+            return {"CANCELLED"}
+
+        _setup.queue    = queue.Queue()
+        _setup.running  = True
+        _setup.progress = 0.0
+        _setup.status   = "Starting…"
+        _setup.error    = ""
+
+        bpy.app.timers.register(_setup_timer, first_interval=0.25)
+        _run_setup_thread()
+
+        self.report({"INFO"}, "Installing dependencies – see N-panel for progress")
+        return {"FINISHED"}
+
+
+def _run_setup_thread():
+    def _work():
+        try:
+            bootstrap.setup(lambda v, t: _setup.queue.put(
+                {"kind": "progress", "value": v, "text": t}))
+            _setup.queue.put({"kind": "done"})
+        except Exception as e:
+            _setup.queue.put({"kind": "error", "text": str(e)})
+
+    threading.Thread(target=_work, daemon=True).start()
+
+
 class AS_OT_Transcribe(bpy.types.Operator):
     bl_idname      = "as.transcribe"
     bl_label       = "Generate Subtitles"
@@ -483,7 +567,9 @@ class AS_OT_Transcribe(bpy.types.Operator):
             self.report({"ERROR"}, "No SOUND or MOVIE strips selected")
             return {"CANCELLED"}
 
-        _patch_sys_path()
+        if not bootstrap.quick_ready():
+            self.report({"ERROR"}, "Dependencies not installed – click 'Set up dependencies'")
+            return {"CANCELLED"}
 
         fps = scene.render.fps / scene.render.fps_base
         args = {
@@ -565,9 +651,35 @@ class AS_PT_Panel(bpy.types.Panel):
     def draw(self, ctx):
         layout = self.layout
         scene  = ctx.scene
-        global _job
+        global _job, _setup
 
-        # Status box while running
+        # --- Dependencies ------------------------------------------------
+        try:
+            ready = bootstrap.quick_ready()
+        except Exception:
+            ready = False
+
+        box = layout.box()
+        if _setup.running:
+            box.label(text="Installing dependencies…", icon="TIME")
+            box.label(text=f"{int(_setup.progress * 100)}%  {_setup.status}")
+        elif _setup.error:
+            box.label(text="Setup failed", icon="ERROR")
+            box.label(text=_setup.error[:70])
+            box.operator("as.setup", icon="FILE_REFRESH", text="Retry setup")
+        elif not ready:
+            box.label(text="Dependencies not installed", icon="ERROR")
+            box.operator("as.setup", icon="IMPORT", text="Set up dependencies")
+            box.label(text="One-time ~2.5 GB download", icon="INFO")
+        else:
+            row = box.row()
+            row.label(text="Dependencies ready", icon="CHECKMARK")
+            row.operator("as.setup", icon="FILE_REFRESH", text="Reinstall")
+
+        if _setup.running:
+            return
+
+        # --- Transcription status ---------------------------------------
         if _job.running:
             box = layout.box()
             box.label(text="⏳ Running…", icon="TIME")
@@ -581,7 +693,7 @@ class AS_PT_Panel(bpy.types.Panel):
         if _job.status == "Done!":
             layout.box().label(text="✅ Subtitles created!", icon="CHECKMARK")
 
-        # Transcription
+        # --- Transcription ----------------------------------------------
         col = layout.column(align=True)
         col.label(text="Transcription", icon="SPEAKER")
         col.prop(scene, "as_model")
@@ -590,7 +702,7 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        # Output
+        # --- Output ------------------------------------------------------
         col = layout.column(align=True)
         col.label(text="Output", icon="TEXT")
         col.prop(scene, "as_channel")
@@ -600,7 +712,7 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        # Formatting
+        # --- Formatting --------------------------------------------------
         col = layout.column(align=True)
         col.label(text="Formatting", icon="FONT_DATA")
         col.prop(scene, "as_text_case")
@@ -608,7 +720,9 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        layout.operator("as.transcribe", icon="REC", text="Generate Subtitles")
+        row = layout.row()
+        row.enabled = ready
+        row.operator("as.transcribe", icon="REC", text="Generate Subtitles")
 
         strips = _get_strips_all(scene)
         sel = [s for s in strips if s.select and s.type in ("SOUND", "MOVIE")]
@@ -619,11 +733,10 @@ class AS_PT_Panel(bpy.types.Panel):
 # Registration
 # ---------------------------------------------------------------------------
 
-CLASSES = [AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
+CLASSES = [AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
 
 
 def register():
-    _patch_sys_path()
     _register_props()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
@@ -631,8 +744,9 @@ def register():
 
 
 def unregister():
-    global _job
-    _job.running = False
+    global _job, _setup
+    _job.running   = False
+    _setup.running = False
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
     _unregister_props()

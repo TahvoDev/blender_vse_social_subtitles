@@ -1,63 +1,38 @@
 """
-align_wav2vec2.py – Word-level forced aligner using torchaudio CTC.
+align_wav2vec2.py – Word-level forced alignment using a wav2vec2 CTC model.
 
-Uses torchaudio.functional.forced_align (available since torchaudio 2.1).
-No whisperx, no pyannote, no av, no pandas, no nltk required.
-torch._dynamo disabled before any import.
+Pure-PyTorch CTC forced alignment (trellis + backtrack + merge), adapted from
+the PyTorch forced-alignment tutorial:
+  https://pytorch.org/audio/stable/tutorials/forced_alignment_tutorial.html
+and the equivalent implementation in WhisperX (BSD-2-Clause):
+  https://github.com/m-bain/whisperX
+
+No torchaudio, whisperx, pyannote, av, pandas, or nltk required.
+torch._dynamo is disabled before any torch import.
 
 Public API
 ----------
-  load_audio_segment(path, offset_s, duration_s) -> np.ndarray  (16kHz f32 mono)
-  align(rel_segments, audio, language, device)   -> [{word,start,end}] or None
+  align(rel_segments, audio, language, device) -> [{word,start,end}] or None
     rel_segments : objects with .start/.end/.text/.words (CLIP-RELATIVE seconds)
     audio        : float32 16kHz mono numpy array, clip-relative (t=0 = clip start)
     returns      : [{word,start,end}] clip-relative seconds, or None on failure
 """
 
-import os, sys, subprocess
+import os
+from dataclasses import dataclass
+
 import numpy as np
 
 os.environ["TORCHDYNAMO_DISABLE"]  = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
 # ---------------------------------------------------------------------------
-# Audio loading via ffmpeg — no av dependency
+# Language → model mapping (HuggingFace wav2vec2 CTC models)
+# Downloaded once to ~/.cache/huggingface/hub.
 # ---------------------------------------------------------------------------
 
-def load_audio_segment(audio_path: str, offset_s: float,
-                        duration_s: float) -> np.ndarray:
-    """Decode a clip segment to 16kHz mono float32 via ffmpeg stdout."""
-    cmd = [
-        "ffmpeg", "-y", "-loglevel", "error",
-        "-ss", str(offset_s),
-        "-t",  str(min(duration_s, 7200.0)),
-        "-i",  audio_path,
-        "-ar", "16000", "-ac", "1",
-        "-f",  "f32le", "-",
-    ]
-    r = subprocess.run(cmd, capture_output=True)
-    if r.returncode != 0 or not r.stdout:
-        raise RuntimeError(
-            f"ffmpeg failed: {r.stderr.decode(errors='replace')[:300]}"
-        )
-    audio = np.frombuffer(r.stdout, dtype=np.float32).copy()
-    peak = np.abs(audio).max()
-    if peak > 1e-6:
-        audio /= peak
-    return audio
-
-# ---------------------------------------------------------------------------
-# Language → model mapping
-# ---------------------------------------------------------------------------
-
-# torchaudio pipeline names (no HF download, ship with torchaudio)
-# Only include ones confirmed present in torchaudio 2.x
-_TA_MODELS = {
-    "en": "WAV2VEC2_ASR_BASE_960H",
-}
-
-# HuggingFace models for other languages (downloaded once to ~/.cache/huggingface)
 _HF_MODELS = {
+    "en": "facebook/wav2vec2-base-960h",
     "fr": "jonatasgrosman/wav2vec2-large-xlsr-53-french",
     "de": "jonatasgrosman/wav2vec2-large-xlsr-53-german",
     "es": "jonatasgrosman/wav2vec2-large-xlsr-53-spanish",
@@ -84,35 +59,21 @@ _HF_MODELS = {
     "he": "imvladikon/wav2vec2-xls-r-300m-hebrew",
 }
 
+_DEFAULT_MODEL = "facebook/wav2vec2-large-960h-lv60-self"
+
+
 # ---------------------------------------------------------------------------
 # Model loading
 # ---------------------------------------------------------------------------
 
 def _load_model(language: str, device: str):
     """
-    Returns (model, align_dict, pipeline_type) where:
-      align_dict    : {char_lower: token_id}
-      pipeline_type : 'torchaudio' | 'huggingface'
-    Both model types output raw logits — caller applies log_softmax.
+    Returns (model, align_dict) where align_dict maps {char_lower: token_id}.
+    The model outputs raw logits — caller applies log_softmax.
     """
     lang = (language or "en").lower().split("-")[0]
+    hf_name = _HF_MODELS.get(lang, _DEFAULT_MODEL)
 
-    # Try torchaudio bundle first (English only — others removed in 2.x)
-    if lang in _TA_MODELS:
-        try:
-            import torchaudio
-            bundle_name = _TA_MODELS[lang]
-            bundle = getattr(torchaudio.pipelines, bundle_name)
-            model = bundle.get_model().to(device)
-            labels = list(bundle.get_labels())
-            # torchaudio labels are uppercase; align_dict uses lowercase
-            align_dict = {c.lower(): i for i, c in enumerate(labels)}
-            return model, align_dict, "torchaudio"
-        except Exception as e:
-            print(f"[aligner] torchaudio bundle failed: {e}", flush=True)
-
-    # HuggingFace
-    hf_name = _HF_MODELS.get(lang, "facebook/wav2vec2-large-960h-lv60-self")
     from transformers import Wav2Vec2ForCTC, Wav2Vec2Processor
     processor = Wav2Vec2Processor.from_pretrained(hf_name)
     model     = Wav2Vec2ForCTC.from_pretrained(hf_name).to(device)
@@ -120,7 +81,8 @@ def _load_model(language: str, device: str):
         char.lower(): code
         for char, code in processor.tokenizer.get_vocab().items()
     }
-    return model, align_dict, "huggingface"
+    return model, align_dict
+
 
 # ---------------------------------------------------------------------------
 # Flatten segments to word list
@@ -145,6 +107,80 @@ def _flatten_words(segments) -> list:
                               "end":   float(seg.end)})
     return words
 
+
+# ---------------------------------------------------------------------------
+# CTC forced alignment (pure torch)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class _Point:
+    token_index: int
+    time_index: int
+    score: float
+
+
+@dataclass
+class _Span:
+    token: int
+    start: int
+    end: int
+    score: float
+
+
+def _get_trellis(emission, tokens, blank_id):
+    import torch
+    num_frame  = emission.size(0)
+    num_tokens = len(tokens)
+
+    trellis = torch.empty((num_frame + 1, num_tokens + 1))
+    trellis[0, 0] = 0
+    trellis[1:, 0] = torch.cumsum(emission[:, blank_id], 0)
+    trellis[0, -num_tokens:] = -float("inf")
+    trellis[-num_tokens:, 0] = float("inf")
+
+    for t in range(num_frame):
+        trellis[t + 1, 1:] = torch.maximum(
+            trellis[t, 1:] + emission[t, blank_id],
+            trellis[t, :-1] + emission[t, tokens],
+        )
+    return trellis
+
+
+def _backtrack(trellis, emission, tokens, blank_id):
+    import torch
+    j = trellis.size(1) - 1
+    t_start = int(torch.argmax(trellis[:, j]).item())
+
+    path = []
+    for t in range(t_start, 0, -1):
+        stayed  = trellis[t - 1, j] + emission[t - 1, blank_id]
+        changed = trellis[t - 1, j - 1] + emission[t - 1, tokens[j - 1]]
+        prob = emission[t - 1, tokens[j - 1] if changed > stayed else blank_id].exp().item()
+        path.append(_Point(j - 1, t - 1, prob))
+        if changed > stayed:
+            j -= 1
+            if j == 0:
+                break
+    else:
+        return None
+    return path[::-1]
+
+
+def _merge_repeats(path, tokens):
+    i1, i2 = 0, 0
+    spans = []
+    while i1 < len(path):
+        while i2 < len(path) and path[i1].token_index == path[i2].token_index:
+            i2 += 1
+        score = sum(path[k].score for k in range(i1, i2)) / (i2 - i1)
+        spans.append(_Span(tokens[path[i1].token_index],
+                           path[i1].time_index,
+                           path[i2 - 1].time_index + 1,
+                           score))
+        i1 = i2
+    return spans
+
+
 # ---------------------------------------------------------------------------
 # Core alignment
 # ---------------------------------------------------------------------------
@@ -161,68 +197,59 @@ def align(rel_segments, audio: np.ndarray, language: str, device: str):
     Returns [{word, start, end}] (clip-relative seconds) or None on failure.
     """
     import torch
-    import torchaudio.functional as TAF
 
     words = _flatten_words(rel_segments)
     if not words:
         return None
 
     try:
-        model, align_dict, ptype = _load_model(language, device)
+        model, align_dict = _load_model(language, device)
     except Exception as e:
         print(f"[aligner] model load failed: {e}", flush=True)
         return None
 
-    # blank token: '[pad]' or '<pad>' if present, else 0
+    # blank token: '<pad>' / '[pad]' if present, else 0
     blank = align_dict.get("[pad]", align_dict.get("<pad>", 0))
-    # space token: '|' for torchaudio, ' ' for some HF models
+    # space token: '|' for wav2vec2 models, ' ' for some others
     space = align_dict.get("|", align_dict.get(" ", None))
 
-    # Get emissions — both torchaudio and HF return raw logits here;
-    # torchaudio bundle .get_model() returns a Wav2Vec2Model, not a pipeline,
-    # so output is raw features that need log_softmax.
     try:
-        wav = torch.from_numpy(audio).unsqueeze(0).to(device)  # (1, T)
+        wav = torch.from_numpy(np.ascontiguousarray(audio, dtype=np.float32)).unsqueeze(0)
+        wav = wav.to(device)
         with torch.inference_mode():
-            out = model(wav)
-            # torchaudio model: returns (Tensor, lengths) tuple
-            # HF Wav2Vec2ForCTC: returns CausalLMOutput with .logits
-            if isinstance(out, tuple):
-                logits = out[0]
-            else:
-                logits = out.logits
-        emissions = torch.log_softmax(logits, dim=-1)  # (1, T', V)
+            logits = model(wav).logits
+        emission = torch.log_softmax(logits, dim=-1)[0].cpu().detach()  # (T, V)
     except Exception as e:
         print(f"[aligner] inference failed: {e}", flush=True)
         return None
 
-    # Build token sequence from transcript
-    # Space handling: insert space token between words
+    # Build token sequence from transcript (unknown chars skipped)
     transcript = " ".join(w["word"] for w in words).lower()
     tokens = []
     for ch in transcript:
         if ch == " ":
             if space is not None:
                 tokens.append(space)
-            # if no space token, skip — CTC blank bridges the gap
         elif ch in align_dict:
             tokens.append(align_dict[ch])
-        # unknown chars: skip (blank in CTC handles unrecognised phonemes)
 
     if not tokens:
         print("[aligner] empty token sequence — no recognised chars", flush=True)
         return None
 
     try:
-        targets      = torch.tensor([tokens], dtype=torch.int32, device=device)
-        aligned_toks, scores = TAF.forced_align(emissions, targets, blank=blank)
-        spans        = TAF.merge_tokens(aligned_toks[0], scores[0])
+        trellis = _get_trellis(emission, tokens, blank)
+        path    = _backtrack(trellis, emission, tokens, blank)
+        if path is None:
+            print("[aligner] backtrack failed", flush=True)
+            return None
+        spans = _merge_repeats(path, tokens)
     except Exception as e:
-        print(f"[aligner] forced_align failed: {e}", flush=True)
+        print(f"[aligner] forced align failed: {e}", flush=True)
         return None
 
-    # frames_per_sec: wav2vec2 has a fixed stride of 320 samples at 16kHz = 50fps
-    fps = 16000 / 320  # = 50.0
+    # wav2vec2 has a fixed stride of 320 samples at 16kHz = 50 fps
+    fps = 16000 / 320
 
     # Split spans into per-word groups using space as delimiter
     groups, cur = [], []
@@ -236,14 +263,13 @@ def align(rel_segments, audio: np.ndarray, language: str, device: str):
     if cur:
         groups.append(cur)
 
-    # Map groups back to words
-    # If group count doesn't match word count (unknown chars caused token drops),
-    # fall back to faster-whisper timestamps for mismatched words.
+    # Map groups back to words. If group count doesn't match word count
+    # (unknown chars dropped tokens), fall back to the input timestamps.
     result = []
     for i, wd in enumerate(words):
         if i < len(groups) and groups[i]:
-            t_start = groups[i][0].start  / fps
-            t_end   = groups[i][-1].end   / fps
+            t_start = groups[i][0].start / fps
+            t_end   = groups[i][-1].end  / fps
         else:
             t_start, t_end = wd["start"], wd["end"]
         result.append({"word": wd["word"], "start": t_start, "end": t_end})

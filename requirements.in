@@ -1,0 +1,17 @@
+# Auto-Subtitles runtime dependencies.
+#
+# Installed into the add-on's private virtual environment by `uv` (see
+# bootstrap.py). Only top-level packages are pinned; uv resolves and installs
+# the transitive closure for whichever Python Blender is running.
+#
+# CUDA: the default PyPI `torch` wheel on Linux is CUDA-capable, so the
+# add-on's Device toggle keeps working when a CUDA driver + cuDNN are present.
+# On CPU-only machines it falls back to CPU automatically.
+
+faster-whisper==1.2.1
+ctranslate2==4.8.2
+onnxruntime==1.30.0
+av==19.0.1
+numpy==2.5.3
+torch==2.11.0
+transformers==4.57.6
