@@ -200,7 +200,11 @@ def ensure_uv(progress=None) -> str:
         _download(url, tarpath, progress, 0.03, 0.20)
         digest = _sha256_file(tarpath)
         if digest != sha:
-            raise RuntimeError(f"uv checksum mismatch (got {digest})")
+            raise RuntimeError(
+                f"uv checksum mismatch for {fname}:\n"
+                f"  expected {sha}\n"
+                f"  got      {digest}"
+            )
 
         if progress:
             progress(0.21, "Installing uv…")
@@ -275,9 +279,15 @@ def setup(progress=None):
         raise RuntimeError(f"virtual environment not created at {vd}")
 
     p(0.35, "Installing dependencies (this can take several minutes)…")
+    seen = [0]
+
+    def _line(line):
+        seen[0] += 1
+        p(0.35 + 0.55 * (seen[0] / (seen[0] + 8.0)), line.strip()[:60])
+
     _run([uv, "pip", "install",
           "--python", str(venv_python()),
-          "-r", str(REQUIREMENTS)], env)
+          "-r", str(REQUIREMENTS)], env, on_line=_line)
 
     _sentinel_path().write_text(json.dumps(_fingerprint()))
 

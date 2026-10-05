@@ -15,6 +15,10 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+class SkipTest(Exception):
+    pass
+
+
 def _load(name):
     path = os.path.join(HERE, name + ".py")
     spec = importlib.util.spec_from_file_location(name, path)
@@ -76,8 +80,7 @@ def test_forced_alignment_trellis():
         import numpy as np
         import torch
     except Exception as e:
-        print(f"  skip forced-alignment test ({e})")
-        return
+        raise SkipTest(str(e))
 
     align = _load("align_wav2vec2")
 
@@ -100,18 +103,22 @@ def test_forced_alignment_trellis():
 
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    failures = 0
+    failures = skipped = 0
     for t in tests:
         try:
             t()
-            print(f"ok   {t.__name__}")
+            print(f"ok    {t.__name__}")
+        except SkipTest as e:
+            skipped += 1
+            print(f"skip  {t.__name__} ({e})")
         except AssertionError as e:
             failures += 1
-            print(f"FAIL {t.__name__}: {e}")
+            print(f"FAIL  {t.__name__}: {e}")
         except Exception as e:
             failures += 1
             print(f"ERROR {t.__name__}: {type(e).__name__}: {e}")
-    print(f"\n{len(tests) - failures}/{len(tests)} passed")
+    passed = len(tests) - failures - skipped
+    print(f"\n{passed} passed, {skipped} skipped, {failures} failed")
     sys.exit(1 if failures else 0)
 
 
