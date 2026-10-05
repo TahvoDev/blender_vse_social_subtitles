@@ -328,7 +328,11 @@ def main():
 
     clips    = args["clips"]
     model_sz = args.get("model", "base")
-    device   = args.get("device", "cpu")
+    device   = args.get("device", "auto")
+
+    if device == "auto":
+        # Prefer the GPU; the model load below falls back to CPU on any CUDA error.
+        device = "cuda"
 
     if not clips:
         error("No clips provided")
