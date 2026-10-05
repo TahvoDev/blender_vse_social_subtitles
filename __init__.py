@@ -358,14 +358,7 @@ def _create_strips_from_result(result_path):
 # ---------------------------------------------------------------------------
 
 def _find_cuda_lib_dirs():
-    """Find CUDA library dirs. Falls back to torch.cuda.is_available()."""
-    # Primary: PyTorch's built-in detection
-    try:
-        import torch
-        return [torch.cuda.is_available()]  # boolean list for compatibility
-    except ImportError:
-        pass
-    # Fallback: search common CUDA paths
+    """Return candidate directories that may contain CUDA libraries."""
     import glob
     candidates = []
     for d in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
