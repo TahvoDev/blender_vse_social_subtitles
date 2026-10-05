@@ -1,14 +1,15 @@
 # Auto-Subtitles VSE Add-on for Blender 5.2
 
-Transcribes selected audio/video strips and places TEXT strips in the VSE timeline,
-using **faster-whisper** + **stable-ts** for word-level timestamp accuracy.
+Transcribes selected audio/video strips and places TEXT strips in the VSE timeline.
+Word timestamps come from **faster-whisper**, optionally refined with a **wav2vec2
+CTC forced aligner** (`torchaudio` / HuggingFace `transformers`) when installed.
 
 ---
 
 ## Requirements
 
 ```bash
-pip install faster-whisper stable-ts
+pip install faster-whisper
 ```
 
 - Python 3.14, Blender 5.2
@@ -16,16 +17,24 @@ pip install faster-whisper stable-ts
 - NVIDIA GPU + CUDA optional (falls back to CPU)
 - **Do NOT install WhisperX** — its torch/_dynamo deps crash Blender
 
+Optional, for more accurate word timestamps (wav2vec2 forced alignment):
+
+```bash
+pip install numpy torch torchaudio transformers
+```
+
+Without these the add-on silently falls back to faster-whisper's own word timestamps.
+
 ---
 
 ## Installation
 
-1. Zip the `auto_subtitles/` folder:
+1. Zip the add-on folder so `__init__.py` sits at the top level of the archive:
    ```bash
-   zip -r auto_subtitles.zip auto_subtitles/
+   zip -r auto_subtitles.zip blender_vse_social_subtitles/
    ```
 2. In Blender: **Edit → Preferences → Add-ons → Install…** → select the zip
-3. Enable **"Auto-Subtitles (faster-whisper)"**
+3. Enable **"Auto-Subtitles"**
 
 ---
 
@@ -52,8 +61,7 @@ pip install faster-whisper stable-ts
 | Max Lines | Maximum lines per subtitle block (default 2) |
 | Text Case | Default / UPPERCASE / lowercase / Title Case |
 | Remove Punctuation | Strip punctuation from output text |
-| Gap Fill | Extend strip end to fill short silences |
-| Max Gap (frames) | Only fill gaps shorter than this many frames |
+| Max Gap (frames) | How long a subtitle lingers after its last word, and the silence length that starts a new block (default 36). Gap-filling is always applied. |
 
 ---
 
@@ -63,6 +71,9 @@ pip install faster-whisper stable-ts
 - A daemon reader thread streams stdout progress lines back to Blender
 - A `bpy.app.timers` callback (250 ms) drains the queue and redraws the UI
 - Results are passed via a temp JSON file, never through memory
+- Word timing uses faster-whisper's word timestamps, optionally refined by a wav2vec2
+  CTC forced aligner (`align_wav2vec2.py`); if torch/torchaudio/transformers are missing
+  or alignment fails, it falls back to faster-whisper's timestamps
 
 ### Strip selection gotcha
 
@@ -84,8 +95,12 @@ MOVIE strip if no paired SOUND strip exists for that file.
 - Make sure strips are selected (highlighted) in the VSE timeline before clicking the button.
 
 **"faster-whisper not found"**
-- Run `pip install faster-whisper stable-ts` and restart Blender.
+- Run `pip install faster-whisper` and restart Blender.
 - The add-on patches `sys.path` to include `~/.local/lib/python3.14/site-packages` at register time.
+
+**Word timestamps look coarse**
+- Install the optional aligner deps: `pip install numpy torch torchaudio transformers`.
+- The worker log prints `(no aligner …)` or `alignment failed` when it falls back.
 
 **CUDA errors / falling back to CPU**
 - Change Device to "CPU" in the panel.
