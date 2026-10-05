@@ -122,6 +122,9 @@ def _collect_selected_clips(scene):
 # ---------------------------------------------------------------------------
 
 class _JobState:
+    __slots__ = ("running", "progress", "status", "error",
+                 "result_path", "args_path", "proc", "queue")
+
     def __init__(self):
         self.running     = False
         self.progress    = 0.0
@@ -327,10 +330,8 @@ def _create_strips_from_result(result_path):
                 print(f"[Auto-Subtitles] Could not create strip {i}: {err}")
                 continue
 
-        try:
+        if hasattr(ts, "frame_final_end"):
             ts.frame_final_end = fe
-        except Exception:
-            pass
 
         ts.text       = text
         ts.wrap_width = 0.9
@@ -341,10 +342,8 @@ def _create_strips_from_result(result_path):
             ("anchor_y",    "BOTTOM"),
             ("location",    (0.5, 0.05)),
         ):
-            try:
+            if hasattr(ts, attr):
                 setattr(ts, attr, val)
-            except AttributeError:
-                pass
         ts.use_shadow = True
         ts.use_box    = True
         ts.box_margin = 0.01
@@ -359,6 +358,14 @@ def _create_strips_from_result(result_path):
 # ---------------------------------------------------------------------------
 
 def _find_cuda_lib_dirs():
+    """Find CUDA library dirs. Falls back to torch.cuda.is_available()."""
+    # Primary: PyTorch's built-in detection
+    try:
+        import torch
+        return [torch.cuda.is_available()]  # boolean list for compatibility
+    except ImportError:
+        pass
+    # Fallback: search common CUDA paths
     import glob
     candidates = []
     for d in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
