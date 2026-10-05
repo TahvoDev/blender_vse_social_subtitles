@@ -122,7 +122,6 @@ def _collect_selected_clips(scene):
 # ---------------------------------------------------------------------------
 
 class _JobState:
-    __slots__ = ("running", "progress", "status", "error", "result_path", "args_path", "queue")
     def __init__(self):
         self.running     = False
         self.progress    = 0.0
@@ -130,7 +129,17 @@ class _JobState:
         self.error       = ""
         self.result_path = ""
         self.args_path   = ""
+        self.proc        = None
         self.queue       = queue.Queue()
+
+    def cleanup(self, *paths):
+        """Remove temp files (default: args/result). Safe to call repeatedly."""
+        for path in (paths or (self.args_path, self.result_path)):
+            try:
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
 
 
 _job = _JobState()
@@ -247,6 +256,7 @@ def _timer_callback():
             _job.error   = msg["text"]
             _job.status  = "Error – see console"
             _job.running = False
+            _job.cleanup()
         elif kind == "done":
             _job.progress = 1.0
             _job.status   = "Creating strips…"
@@ -317,8 +327,10 @@ def _create_strips_from_result(result_path):
                 print(f"[Auto-Subtitles] Could not create strip {i}: {err}")
                 continue
 
-        if hasattr(ts, "frame_final_end"):
+        try:
             ts.frame_final_end = fe
+        except Exception:
+            pass
 
         ts.text       = text
         ts.wrap_width = 0.9
@@ -329,18 +341,15 @@ def _create_strips_from_result(result_path):
             ("anchor_y",    "BOTTOM"),
             ("location",    (0.5, 0.05)),
         ):
-            if hasattr(ts, attr):
+            try:
                 setattr(ts, attr, val)
+            except AttributeError:
+                pass
         ts.use_shadow = True
         ts.use_box    = True
         ts.box_margin = 0.01
 
-    for path in (_job.args_path, result_path):
-        try:
-            if path and os.path.exists(path):
-                os.unlink(path)
-        except Exception:
-            pass
+    _job.cleanup()
 
     print("[Auto-Subtitles] Strips created successfully.")
 
@@ -350,14 +359,6 @@ def _create_strips_from_result(result_path):
 # ---------------------------------------------------------------------------
 
 def _find_cuda_lib_dirs():
-    """Find CUDA library dirs. Falls back to torch.cuda.is_available()."""
-    # Primary: PyTorch's built-in detection
-    try:
-        import torch
-        return [torch.cuda.is_available()]  # boolean list for compatibility
-    except ImportError:
-        pass
-    # Fallback: search common CUDA paths
     import glob
     candidates = []
     for d in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
@@ -421,6 +422,8 @@ def _launch_worker(args_path, result_path, device="cpu"):
             _job.queue.put({"kind": "error", "text": str(e)})
             return
 
+        _job.proc = proc
+
         def _read_stdout():
             for line in proc.stdout:
                 line = line.rstrip()
@@ -444,11 +447,16 @@ def _launch_worker(args_path, result_path, device="cpu"):
         reader.start()
         proc.wait()
         reader.join()
+        _job.proc = None
 
-        if proc.returncode != 0 and _job.running:
+        if not _job.running:
+            # Cancelled – timer is gone and cancel() has returned, so clean the
+            # paths this worker owned (not _job.*, which a new job may have set).
+            _job.cleanup(args_path, result_path)
+        elif proc.returncode != 0:
             _job.queue.put({"kind": "error",
                             "text": f"Worker exited with code {proc.returncode}"})
-        elif _job.running:
+        else:
             _job.queue.put({"kind": "done"})
 
     threading.Thread(target=_run, daemon=True).start()
@@ -498,10 +506,12 @@ class AS_OT_Transcribe(bpy.types.Operator):
         with open(args_path, "w", encoding="utf-8") as f:
             json.dump(args, f)
 
+        _job.queue       = queue.Queue()  # drop stale messages from a prior run
         _job.running     = True
         _job.progress    = 0.0
         _job.status      = "Starting…"
         _job.error       = ""
+        _job.proc        = None
         _job.args_path   = args_path
         _job.result_path = res_path
 
@@ -519,8 +529,24 @@ class AS_OT_Cancel(bpy.types.Operator):
 
     def execute(self, ctx):
         global _job
+        if not _job.running:
+            self.report({"WARNING"}, "No transcription running")
+            return {"CANCELLED"}
+
         _job.running = False
         _job.status  = "Cancelled"
+
+        proc = _job.proc
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
+        _job.proc = None
+        _job.cleanup()
+
         self.report({"INFO"}, "Transcription cancelled")
         return {"FINISHED"}
 
