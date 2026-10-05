@@ -161,31 +161,69 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
 # Audio decoding
 # ---------------------------------------------------------------------------
 
-def _decode_audio(path, sampling_rate=16000):
-    """
-    Decode an audio file to float32 mono at sampling_rate using PyAV.
+def _iter_resampled(container, stream, resampler):
+    """Yield 1-D int16 mono arrays from a PyAV container (incl. flush)."""
+    for frame in container.decode(stream):
+        frame.pts = None
+        for out in resampler.resample(frame):
+            yield out.to_ndarray().reshape(-1)
+    for out in resampler.resample(None):
+        yield out.to_ndarray().reshape(-1)
 
-    Implemented locally rather than via ``faster_whisper.audio.decode_audio``:
-    that helper passes ``metadata_errors=...`` to ``av.open``, which PyAV >= 19
-    removed, so it raises TypeError there.
+
+def _decode_audio(path, start_s=0.0, duration_s=None, sampling_rate=16000):
+    """
+    Decode a clip to peak-normalised float32 mono at sampling_rate using PyAV.
+
+    Seeks to ``start_s`` and keeps only the clip window, so peak memory is the
+    clip, not the whole source file. Output is peak-normalised because the
+    wav2vec2 aligner is amplitude-sensitive.
+
+    ponytail: local PyAV decode instead of faster_whisper.audio.decode_audio,
+    which hardcodes the ``metadata_errors`` kwarg PyAV >= 19 removed (still
+    unguarded in the latest release, 1.2.1). Drop this and delegate once
+    faster-whisper guards it AND exposes seek/normalise — but we also want the
+    streaming trim, so likely keep it.
     """
     import av
     import numpy as np
     from av.audio.resampler import AudioResampler
 
+    start_sample = max(0, int(round(start_s * sampling_rate)))
+    want_samples = int(round(duration_s * sampling_rate)) if duration_s else None
+
     resampler = AudioResampler(format="s16", layout="mono", rate=sampling_rate)
-    chunks = []
+    kept, got, seen = [], 0, 0
     with av.open(path, mode="r") as container:
         if not container.streams.audio:
             raise RuntimeError(f"no audio stream in {path}")
-        for frame in container.decode(container.streams.audio[0]):
-            frame.pts = None
-            for out in resampler.resample(frame):
-                chunks.append(out.to_ndarray())
-    if not chunks:
+        stream = container.streams.audio[0]
+        if start_sample:
+            # Seek is keyframe-based; the skip loop below trims to exact start.
+            try:
+                container.seek(int(start_s * av.time_base), backward=True)
+            except Exception:
+                pass
+        for arr in _iter_resampled(container, stream, resampler):
+            n = arr.size
+            if seen + n <= start_sample:
+                seen += n
+                continue
+            lo = max(0, start_sample - seen)
+            hi = n if want_samples is None else min(n, lo + (want_samples - got))
+            if hi > lo:
+                kept.append(arr[lo:hi])
+                got += hi - lo
+            seen += n
+            if want_samples is not None and got >= want_samples:
+                break
+
+    if not kept:
         return np.zeros(0, dtype=np.float32)
-    audio = np.concatenate(chunks, axis=1).reshape(-1)
-    return audio.astype(np.float32) / 32768.0
+    audio = np.concatenate(kept).astype(np.float32)
+    peak = float(np.abs(audio).max()) if audio.size else 0.0
+    audio /= peak if peak > 1e-6 else 32768.0
+    return audio
 
 
 # ---------------------------------------------------------------------------
@@ -204,12 +242,10 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     progress(clip_idx / n_clips,
              f"Transcribing clip {clip_idx+1}/{n_clips}: {clip['name']} …")
 
-    # Decode the clip to 16kHz mono float32 with PyAV. Timestamps are then
-    # relative to t=0 of the clip, so no offset math and no system ffmpeg.
-    full  = _decode_audio(audio_path, sampling_rate=16000)
-    start = max(0, int(trim_start_s * 16000))
-    stop  = start + int(trim_duration_s * 16000) if trim_duration_s else None
-    clip_audio = full[start:stop]
+    # Decode only the clip window to 16kHz mono float32 with PyAV (seeks to the
+    # in-point). Timestamps are relative to t=0 of the clip, so no offset math.
+    clip_audio = _decode_audio(audio_path, trim_start_s, trim_duration_s,
+                               sampling_rate=16000)
 
     seg_gen, info = model.transcribe(
         clip_audio,
@@ -231,7 +267,7 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     # audio array; _words_to_subtitles wants file-relative times (it subtracts
     # trim_start_s), so add trim_start_s back when building all_words.
     all_words = None
-    if _ALIGN_AVAILABLE and segments and clip_audio is not None:
+    if _ALIGN_AVAILABLE and segments:
         try:
             aligned = _aligner.align(
                 segments, clip_audio,
@@ -328,6 +364,7 @@ def main():
     progress(0.02, f"Model loaded on {device}.")
 
     all_subs = []
+    failed = []
     for i, clip in enumerate(clips):
         try:
             all_subs.extend(transcribe_clip(clip, model, args, i, len(clips), device))
@@ -340,11 +377,18 @@ def main():
                     model, device = _load("cpu"), "cpu"
                     all_subs.extend(transcribe_clip(clip, model, args, i, len(clips), device))
                 except Exception as e2:
-                    error(f"CPU retry failed '{clip['name']}': {e2}\n{_tb.format_exc()}")
+                    failed.append(clip["name"])
+                    print(f"[worker] clip '{clip['name']}' failed on CPU retry: {e2}", flush=True)
+                    print(_tb.format_exc(), flush=True)
             else:
-                error(f"Error on clip '{clip['name']}': {e}\n{_tb.format_exc()}")
+                failed.append(clip["name"])
+                print(f"[worker] clip '{clip['name']}' failed: {e}", flush=True)
+                print(_tb.format_exc(), flush=True)
         except Exception as e:
-            error(f"Error on clip '{clip['name']}': {e}\n{_tb.format_exc()}")
+            # One bad file must not sink the rest of the job.
+            failed.append(clip["name"])
+            print(f"[worker] clip '{clip['name']}' failed: {e}", flush=True)
+            print(_tb.format_exc(), flush=True)
 
     all_subs.sort(key=lambda s: s["frame_start"])
 
@@ -354,7 +398,11 @@ def main():
     except Exception as e:
         error(f"Failed to write result: {e}")
 
-    progress(1.0, "Done.")
+    if failed:
+        progress(1.0, f"Done ({len(failed)}/{len(clips)} clip(s) failed: "
+                      f"{', '.join(failed)})")
+    else:
+        progress(1.0, "Done.")
 
 if __name__ == "__main__":
     main()

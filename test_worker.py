@@ -101,6 +101,45 @@ def test_forced_alignment_trellis():
     assert labels == [1, 2], labels
 
 
+def test_decode_audio_trim_and_normalize():
+    try:
+        import numpy as np
+        import av  # noqa: F401
+    except Exception as e:
+        raise SkipTest(str(e))
+
+    import wave
+    import struct
+    import math
+    import tempfile
+
+    tw = _load("transcribe_worker")
+
+    fd, path = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        with wave.open(path, "w") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(16000)
+            w.writeframes(b"".join(
+                struct.pack("<h", int(3000 * math.sin(2 * math.pi * 440 * i / 16000)))
+                for i in range(16000)
+            ))
+
+        full = tw._decode_audio(path, sampling_rate=16000)
+        assert full.dtype == np.float32, full.dtype
+        assert full.ndim == 1
+        assert abs(full.size - 16000) < 1000, full.size
+        # peak-normalised to ~1.0 (aligner is amplitude-sensitive)
+        assert 0.9 <= float(np.abs(full).max()) <= 1.0001, float(np.abs(full).max())
+
+        clip = tw._decode_audio(path, 0.25, 0.25, sampling_rate=16000)
+        assert abs(clip.size - 4000) < 1000, clip.size
+    finally:
+        os.unlink(path)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failures = skipped = 0

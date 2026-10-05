@@ -40,7 +40,7 @@ No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
 1. Open the **Video Sequence Editor**, select one or more **SOUND** or **MOVIE**
    strips.
 2. Open the **N-panel** (`N`) → **Auto-Subtitles** tab.
-3. Click **Set up dependencies** (one-time; downloads ~700 MB into a private
+3. Click **Set up dependencies** (one-time; downloads ~2.5 GB into a private
    venv). Progress is shown in the panel.
 4. Configure options, then click **Generate Subtitles**.
 5. Progress appears in the panel; TEXT strips are created when done. Model
@@ -67,9 +67,10 @@ Blender process                     worker process (private venv)
   ML libraries (torch, ctranslate2, …) never load inside Blender. This avoids
   the native-library/`torch._dynamo` crashes that occur when such packages are
   imported into Blender's process.
-- Audio is decoded once with faster-whisper's PyAV-based `decode_audio`, then
-  word timestamps are refined by the wav2vec2 aligner (pure PyTorch CTC forced
-  alignment — no `torchaudio`).
+- Audio is decoded with PyAV, seeking straight to the clip window (only the
+  clip is held in memory) and peak-normalised for the aligner; word timestamps
+  are then refined by the wav2vec2 aligner (pure PyTorch CTC forced alignment —
+  no `torchaudio`).
 
 **Note:** a Blender upgrade that changes Blender's Python version invalidates
 the venv. Just click **Reinstall** — it rebuilds in one step.

@@ -12,6 +12,7 @@ import bpy
 import os
 import json
 import queue
+import tempfile
 import threading
 import subprocess
 from pathlib import Path
@@ -113,10 +114,6 @@ def _redraw_all():
                     region.tag_redraw()
 
 
-def _online_access():
-    return bool(getattr(bpy.app, "online_access", True))
-
-
 # ---------------------------------------------------------------------------
 # Global job state
 # ---------------------------------------------------------------------------
@@ -156,9 +153,8 @@ class _SetupState:
         self.queue    = queue.Queue()
 
 
-_job        = _JobState()
-_setup      = _SetupState()
-_deps_ready = False
+_job   = _JobState()
+_setup = _SetupState()
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +283,7 @@ def _timer_callback():
 
 
 def _setup_timer():
-    global _setup, _deps_ready
+    global _setup
     if not _setup.running:
         return None  # unregister timer
 
@@ -310,7 +306,6 @@ def _setup_timer():
             _setup.progress = 1.0
             _setup.status   = "Ready"
             _setup.running  = False
-            _deps_ready     = True
 
     if changed:
         _redraw_all()
@@ -435,12 +430,10 @@ def _find_cuda_lib_dirs():
 
 
 def _build_worker_env(device):
-    # Isolate the venv interpreter from Blender's/host's PYTHONPATH and user
-    # site-packages, which would otherwise shadow the pinned dependency versions.
-    env = os.environ.copy()
-    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
-        env.pop(key, None)
-    env["PYTHONNOUSERSITE"] = "1"
+    # bootstrap.clean_env() isolates the venv interpreter from Blender's/host's
+    # PYTHONPATH and user site-packages, which would otherwise shadow the pinned
+    # dependency versions.
+    env = bootstrap.clean_env()
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -520,14 +513,14 @@ def _launch_worker(args_path, result_path, device="cpu"):
 class AS_OT_Setup(bpy.types.Operator):
     bl_idname      = "as.setup"
     bl_label       = "Set up dependencies"
-    bl_description = "Download and install the transcription runtime (one-time, ~700 MB)"
+    bl_description = "Download and install the transcription runtime (one-time, ~2.5 GB)"
 
     def execute(self, ctx):
         global _setup
         if _setup.running:
             self.report({"WARNING"}, "Dependency setup already running")
             return {"CANCELLED"}
-        if not _online_access():
+        if not bootstrap.online_access():
             self.report({"ERROR"},
                         "Enable online access: Preferences > Get Extensions")
             return {"CANCELLED"}
@@ -574,7 +567,7 @@ class AS_OT_Transcribe(bpy.types.Operator):
             self.report({"ERROR"}, "No SOUND or MOVIE strips selected")
             return {"CANCELLED"}
 
-        if not _deps_ready:
+        if not bootstrap.quick_ready():
             self.report({"ERROR"}, "Dependencies not installed – click 'Set up dependencies'")
             return {"CANCELLED"}
 
@@ -591,7 +584,6 @@ class AS_OT_Transcribe(bpy.types.Operator):
             "fps":         fps,
         }
 
-        import tempfile
         fd_a, args_path = tempfile.mkstemp(suffix="_as_args.json",   prefix="blender_")
         fd_r, res_path  = tempfile.mkstemp(suffix="_as_result.json", prefix="blender_")
         os.close(fd_a)
@@ -659,9 +651,14 @@ class AS_PT_Panel(bpy.types.Panel):
     def draw(self, ctx):
         layout = self.layout
         scene  = ctx.scene
-        global _job, _setup, _deps_ready
+        global _job, _setup
 
         # --- Dependencies ------------------------------------------------
+        try:
+            ready = bootstrap.quick_ready()
+        except Exception:
+            ready = False
+
         box = layout.box()
         if _setup.running:
             box.label(text="Installing dependencies…", icon="TIME")
@@ -670,10 +667,10 @@ class AS_PT_Panel(bpy.types.Panel):
             box.label(text="Setup failed", icon="ERROR")
             box.label(text=_setup.error[:70])
             box.operator("as.setup", icon="FILE_REFRESH", text="Retry setup")
-        elif not _deps_ready:
+        elif not ready:
             box.label(text="Dependencies not installed", icon="ERROR")
             box.operator("as.setup", icon="IMPORT", text="Set up dependencies")
-            box.label(text="One-time ~700 MB download", icon="INFO")
+            box.label(text="One-time ~2.5 GB download", icon="INFO")
         else:
             row = box.row()
             row.label(text="Dependencies ready", icon="CHECKMARK")
@@ -724,7 +721,7 @@ class AS_PT_Panel(bpy.types.Panel):
         layout.separator()
 
         row = layout.row()
-        row.enabled = _deps_ready
+        row.enabled = ready
         row.operator("as.transcribe", icon="REC", text="Generate Subtitles")
 
         strips = _get_strips_all(scene)
@@ -740,14 +737,9 @@ CLASSES = [AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
 
 
 def register():
-    global _deps_ready
     _register_props()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
-    try:
-        _deps_ready = bootstrap.quick_ready()
-    except Exception:
-        _deps_ready = False
     print("[Auto-Subtitles] Add-on registered.")
 
 

@@ -19,11 +19,12 @@ import platform
 import shutil
 import tarfile
 import tempfile
+import zipfile
 import subprocess
 import urllib.request
 from pathlib import Path
 
-# Pinned uv release + verified sha256 of the linux-gnu archives.
+# Pinned uv release + verified sha256 of each archive.
 UV_VERSION = "0.12.23"
 _UV_ASSETS = {
     ("Linux", "x86_64"): (
@@ -33,6 +34,22 @@ _UV_ASSETS = {
     ("Linux", "aarch64"): (
         "uv-aarch64-unknown-linux-gnu.tar.gz",
         "6524bd338177ed50d035d39354e12545e993bbeba2ecbddf0480c5b3a81d313f",
+    ),
+    ("Darwin", "x86_64"): (
+        "uv-x86_64-apple-darwin.tar.gz",
+        "960da44cb4b73685206ddd250b19e0a117fa41095710c1038f081f5cb613efb4",
+    ),
+    ("Darwin", "arm64"): (
+        "uv-aarch64-apple-darwin.tar.gz",
+        "50487ae565ccd96e499056b4674d438f4c53170202617b4c759defe0c6a1b544",
+    ),
+    ("Windows", "AMD64"): (
+        "uv-x86_64-pc-windows-msvc.zip",
+        "75d05de6762778c31ee183398de7dd15093fad0ed90b1f236d8205ea5ec00c90",
+    ),
+    ("Windows", "ARM64"): (
+        "uv-aarch64-pc-windows-msvc.zip",
+        "13294e232ececbe709c06b74e6ced06f2a225ea5591476685362f22be56a50d5",
     ),
 }
 
@@ -274,16 +291,29 @@ def ensure_uv(progress=None) -> str:
 
         if progress:
             progress(0.21, "Installing uv…")
-        with tarfile.open(tarpath, "r:gz") as tf:
-            member = next((m for m in tf.getmembers()
-                           if m.isfile() and (m.name == "uv" or m.name.endswith("/uv"))), None)
-            if member is None:
-                raise RuntimeError("uv binary not found in downloaded archive")
-            src = tf.extractfile(member)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with open(target, "wb") as out:
-                shutil.copyfileobj(src, out)
-        target.chmod(0o755)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        want = "uv.exe" if sys.platform == "win32" else "uv"
+        if fname.endswith(".zip"):
+            with zipfile.ZipFile(tarpath) as zf:
+                name = next((n for n in zf.namelist()
+                             if os.path.basename(n) == want), None)
+                if name is None:
+                    raise RuntimeError("uv binary not found in downloaded archive")
+                with zf.open(name) as src, open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+        else:
+            with tarfile.open(tarpath, "r:gz") as tf:
+                member = next((m for m in tf.getmembers()
+                               if m.isfile() and os.path.basename(m.name) == want), None)
+                if member is None:
+                    raise RuntimeError("uv binary not found in downloaded archive")
+                src = tf.extractfile(member)
+                with open(target, "wb") as out:
+                    shutil.copyfileobj(src, out)
+        try:
+            target.chmod(0o755)
+        except Exception:
+            pass
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
