@@ -90,6 +90,24 @@ def data_dir() -> Path:
     return p
 
 
+def cache_dir() -> Path:
+    """
+    Stable per-user cache for the uv binary + wheel cache.
+
+    Kept OUT of the extension's user data dir so reinstalling/updating the
+    add-on never wipes the (multi-GB) downloaded wheels.
+    """
+    if sys.platform == "win32":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    elif sys.platform == "darwin":
+        base = os.path.expanduser("~/Library/Caches")
+    else:
+        base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    p = Path(base) / "auto_subtitles"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
 def venv_dir() -> Path:
     return data_dir() / "venv"
 
@@ -190,7 +208,7 @@ def probe_ready(timeout: int = 300) -> bool:
 # ---------------------------------------------------------------------------
 
 def _uv_path() -> Path:
-    return data_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
+    return cache_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
 
 
 def _download(url: str, dest: Path, progress=None, lo: float = 0.0, hi: float = 1.0):
@@ -309,8 +327,13 @@ def setup(progress=None):
 
     uv = ensure_uv(p)
 
+    # Reclaim space from older versions whose uv binary/cache lived inside the
+    # extension's user data dir (now relocated to cache_dir()).
+    for stale in (data_dir() / "uv-cache", data_dir() / "bin"):
+        shutil.rmtree(stale, ignore_errors=True)
+
     env = os.environ.copy()
-    env["UV_CACHE_DIR"] = str(data_dir() / "uv-cache")
+    env["UV_CACHE_DIR"] = str(cache_dir() / "uv-cache")
     env["UV_NO_PROGRESS"] = "1"
     env["UV_PYTHON_PREFERENCE"] = "only-system"
 
