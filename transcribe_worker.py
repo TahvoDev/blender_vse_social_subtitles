@@ -2,7 +2,7 @@
 transcribe_worker.py – subprocess worker for Auto-Subtitles VSE add-on.
 
 Pipeline:
-  1. faster-whisper decode_audio (PyAV) → clip audio, 16kHz mono float32
+  1. PyAV → decode clip audio to 16kHz mono float32 (no system ffmpeg)
   2. faster-whisper → transcript + word timestamps (clip-relative from t=0)
   3. align_wav2vec2 → wav2vec2 CTC forced alignment (falls back to
                       faster-whisper timestamps if it fails)
@@ -158,6 +158,37 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
     return out
 
 # ---------------------------------------------------------------------------
+# Audio decoding
+# ---------------------------------------------------------------------------
+
+def _decode_audio(path, sampling_rate=16000):
+    """
+    Decode an audio file to float32 mono at sampling_rate using PyAV.
+
+    Implemented locally rather than via ``faster_whisper.audio.decode_audio``:
+    that helper passes ``metadata_errors=...`` to ``av.open``, which PyAV >= 19
+    removed, so it raises TypeError there.
+    """
+    import av
+    import numpy as np
+    from av.audio.resampler import AudioResampler
+
+    resampler = AudioResampler(format="s16", layout="mono", rate=sampling_rate)
+    chunks = []
+    with av.open(path, mode="r") as container:
+        if not container.streams.audio:
+            raise RuntimeError(f"no audio stream in {path}")
+        for frame in container.decode(container.streams.audio[0]):
+            frame.pts = None
+            for out in resampler.resample(frame):
+                chunks.append(out.to_ndarray())
+    if not chunks:
+        return np.zeros(0, dtype=np.float32)
+    audio = np.concatenate(chunks, axis=1).reshape(-1)
+    return audio.astype(np.float32) / 32768.0
+
+
+# ---------------------------------------------------------------------------
 # Transcribe one clip
 # ---------------------------------------------------------------------------
 
@@ -173,27 +204,15 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     progress(clip_idx / n_clips,
              f"Transcribing clip {clip_idx+1}/{n_clips}: {clip['name']} …")
 
-    # Decode the clip to 16kHz mono float32 using faster-whisper's PyAV-based
-    # decoder. Timestamps are then relative to t=0 of the clip, so no offset
-    # math and no system ffmpeg dependency.
-    from faster_whisper.audio import decode_audio
-
-    clip_audio = None
-    ts_offset  = trim_start_s
-    try:
-        full  = decode_audio(audio_path, sampling_rate=16000)
-        start = max(0, int(trim_start_s * 16000))
-        stop  = start + int(trim_duration_s * 16000) if trim_duration_s else None
-        clip_audio      = full[start:stop]
-        transcribe_input = clip_audio
-        ts_offset        = 0.0
-    except Exception as e:
-        print(f"[worker] decode_audio failed ({e}) – using source file", flush=True)
-        transcribe_input = audio_path
-        ts_offset        = trim_start_s  # subtract later to get clip-relative
+    # Decode the clip to 16kHz mono float32 with PyAV. Timestamps are then
+    # relative to t=0 of the clip, so no offset math and no system ffmpeg.
+    full  = _decode_audio(audio_path, sampling_rate=16000)
+    start = max(0, int(trim_start_s * 16000))
+    stop  = start + int(trim_duration_s * 16000) if trim_duration_s else None
+    clip_audio = full[start:stop]
 
     seg_gen, info = model.transcribe(
-        transcribe_input,
+        clip_audio,
         language=language,
         word_timestamps=True,
         vad_filter=True,
@@ -203,22 +222,6 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     )
     segments = list(seg_gen)
     detected_lang = info.language
-
-    # If we fell back to the source file, shift timestamps to clip-relative
-    if ts_offset > 0:
-        class _ShiftedSeg:
-            def __init__(self, seg, off):
-                self.start = seg.start - off
-                self.end   = seg.end   - off
-                self.text  = seg.text
-                self.words = [_ShiftedWord(w, off) for w in (seg.words or [])]
-        class _ShiftedWord:
-            def __init__(self, w, off):
-                self.word        = w.word
-                self.start       = w.start - off
-                self.end         = w.end   - off
-                self.probability = getattr(w, "probability", 1.0)
-        segments = [_ShiftedSeg(s, ts_offset) for s in segments]
 
     progress((clip_idx + 0.4) / n_clips,
              f"Clip {clip_idx+1}: {len(segments)} segments"
