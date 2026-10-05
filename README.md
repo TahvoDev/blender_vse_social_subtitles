@@ -1,42 +1,78 @@
-# Auto-Subtitles VSE Add-on for Blender 5.2
+# Auto-Subtitles VSE Add-on for Blender
 
-Transcribes selected audio/video strips and places TEXT strips in the VSE timeline,
-using **faster-whisper** + **stable-ts** for word-level timestamp accuracy.
+Transcribes selected audio/video strips and places TEXT strips in the VSE
+timeline, using **faster-whisper** for transcription and a **wav2vec2 CTC
+forced aligner** for accurate word-level timestamps.
+
+One-click setup: the add-on installs its own runtime dependencies on first use,
+so there is nothing to `pip install` by hand and no Administrator/root access
+required.
 
 ---
 
 ## Requirements
 
-```bash
-pip install faster-whisper stable-ts
-```
+- Blender **5.0+** (Video Sequence Editor)
+- Internet access for the one-time dependency download (the add-on declares the
+  `network` permission and honours **Preferences → Get Extensions → Allow
+  Online Access**)
+- NVIDIA GPU + CUDA optional — falls back to CPU automatically
 
-- Python 3.14, Blender 5.2
-- ffmpeg installed system-wide (for audio decoding)
-- NVIDIA GPU + CUDA optional (falls back to CPU)
-- **Do NOT install WhisperX** — its torch/_dynamo deps crash Blender
+No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
 
 ---
 
 ## Installation
 
-1. Zip the `auto_subtitles/` folder:
+1. Zip the add-on folder so `blender_manifest.toml` and `__init__.py` are at the
+   archive root:
    ```bash
-   zip -r auto_subtitles.zip auto_subtitles/
+   zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
+       transcribe_worker.py align_wav2vec2.py requirements.in
    ```
-2. In Blender: **Edit → Preferences → Add-ons → Install…** → select the zip
-3. Enable **"Auto-Subtitles (faster-whisper)"**
+2. In Blender: **Edit → Preferences → Add-ons → Install…** → select the zip.
+3. Enable **"Auto-Subtitles"**.
 
 ---
 
 ## Usage
 
-1. Open the **Video Sequence Editor**
-2. Select one or more **SOUND** or **MOVIE** strips in the timeline
-3. Open the **N-panel** (press `N`) → **Auto-Subtitles** tab
-4. Configure options (see below)
-5. Click **Generate Subtitles**
-6. Watch progress in the panel — TEXT strips appear when done
+1. Open the **Video Sequence Editor**, select one or more **SOUND** or **MOVIE**
+   strips.
+2. Open the **N-panel** (`N`) → **Auto-Subtitles** tab.
+3. Click **Set up dependencies** (one-time; downloads ~700 MB into a private
+   venv). Progress is shown in the panel.
+4. Configure options, then click **Generate Subtitles**.
+5. Progress appears in the panel; TEXT strips are created when done. Model
+   weights download on first use.
+
+---
+
+## How it works
+
+```
+Blender process                     worker process (private venv)
+  __init__.py                         transcribe_worker.py
+   │ json / subprocess only   ─────▶  │ faster-whisper + wav2vec2 aligner
+  bootstrap.py                         │ (ctranslate2, onnxruntime, torch, PyAV)
+   └─ uv: venv + pinned wheels         └─ never loads ML libs in Blender
+```
+
+- `bootstrap.py` uses [uv](https://github.com/astral-sh/uv) to create a venv
+  from Blender's own Python and install the pinned dependencies in
+  `requirements.in`. The venv lives outside the add-on (in the per-extension
+  user data dir), so it never writes into the add-on folder and survives add-on
+  updates.
+- The transcription worker runs in that venv as a separate process, so heavy
+  ML libraries (torch, ctranslate2, …) never load inside Blender. This avoids
+  the native-library/`torch._dynamo` crashes that occur when such packages are
+  imported into Blender's process.
+- Audio is decoded once with faster-whisper's PyAV-based `decode_audio`, then
+  word timestamps are refined by the wav2vec2 aligner (pure PyTorch CTC forced
+  alignment — no `torchaudio`).
+
+**Note:** a Blender upgrade that changes Blender's Python version invalidates
+the venv. Just click **Reinstall** — it rebuilds in one step.
 
 ---
 
@@ -50,47 +86,38 @@ pip install faster-whisper stable-ts
 | Text Channel | VSE channel number for output TEXT strips |
 | Max Chars/Line | Maximum characters per subtitle line (default 42) |
 | Max Lines | Maximum lines per subtitle block (default 2) |
+| Max Gap (frames) | How long a subtitle lingers after the last word; also splits blocks on longer silences |
 | Text Case | Default / UPPERCASE / lowercase / Title Case |
 | Remove Punctuation | Strip punctuation from output text |
-| Gap Fill | Extend strip end to fill short silences |
-| Max Gap (frames) | Only fill gaps shorter than this many frames |
-
----
-
-## Architecture notes
-
-- All transcription runs in a **subprocess** (`transcribe_worker.py`) so Blender never freezes
-- A daemon reader thread streams stdout progress lines back to Blender
-- A `bpy.app.timers` callback (250 ms) drains the queue and redraws the UI
-- Results are passed via a temp JSON file, never through memory
-
-### Strip selection gotcha
-
-`context.selected_sequences` is always empty when an operator fires from the
-N-panel sidebar in Blender 5.2. The add-on scans `scene.sequence_editor.strips_all`
-directly and checks `strip.select` on each strip.
-
-### MOVIE + SOUND pairing
-
-When you add an `.mp4` to the VSE, Blender creates two linked strips. The add-on
-prefers the **SOUND** strip (has a `.sound.filepath`) and only falls back to the
-MOVIE strip if no paired SOUND strip exists for that file.
 
 ---
 
 ## Troubleshooting
 
-**"No SOUND or MOVIE strips selected"**
-- Make sure strips are selected (highlighted) in the VSE timeline before clicking the button.
+**"Dependencies not installed"** — click **Set up dependencies** in the N-panel.
 
-**"faster-whisper not found"**
-- Run `pip install faster-whisper stable-ts` and restart Blender.
-- The add-on patches `sys.path` to include `~/.local/lib/python3.14/site-packages` at register time.
+**Setup fails / downloads blocked** — enable **Preferences → Get Extensions →
+Allow Online Access**, then retry. Setup failures and full command output are
+printed to Blender's system console.
 
-**CUDA errors / falling back to CPU**
-- Change Device to "CPU" in the panel.
-- Verify `ctranslate2` was built with CUDA support: `python -c "import ctranslate2; print(ctranslate2.get_cuda_device_count())"`.
+**"No SOUND or MOVIE strips selected"** — make sure strips are highlighted in
+the VSE before clicking Generate.
 
-**Worker exits with non-zero code**
-- Open Blender's **System Console** (Window → Toggle System Console on Windows,
-  or launch from terminal on Linux/macOS) to see the full traceback from the worker.
+**CUDA errors / falling back to CPU** — switch Device to "CPU", or install a
+matching CUDA driver + cuDNN. The default PyPI `torch` wheel is CUDA-capable on
+Linux.
+
+**Worker exits with a non-zero code** — open Blender's system console
+(Window → Toggle System Console, or launch Blender from a terminal) to see the
+worker traceback.
+
+---
+
+## Development
+
+Run the self-checks (no dependencies required; torch tests are skipped if
+absent):
+
+```bash
+python3 test_worker.py
+```

@@ -2,29 +2,27 @@
 transcribe_worker.py – subprocess worker for Auto-Subtitles VSE add-on.
 
 Pipeline:
-  1. ffmpeg        → extract clip audio to 16kHz mono WAV (clean timestamps)
+  1. faster-whisper decode_audio (PyAV) → clip audio, 16kHz mono float32
   2. faster-whisper → transcript + word timestamps (clip-relative from t=0)
-  3. align_wav2vec2 → wav2vec2 CTC forced alignment for precise timestamps
-                      (optional — falls back to faster-whisper timestamps)
+  3. align_wav2vec2 → wav2vec2 CTC forced alignment (falls back to
+                      faster-whisper timestamps if it fails)
 
-torch._dynamo disabled before all imports to prevent Blender subprocess crashes.
+Runs in the add-on's private venv, never inside Blender's process.
+torch._dynamo disabled before any import to prevent crashes.
 """
 
-import os, sys, site, json, string, textwrap, tempfile, subprocess as _sp, traceback as _tb
+import os, sys, json, string, textwrap, traceback as _tb
 
 os.environ["TORCHDYNAMO_DISABLE"]  = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
-# Patch sys.path for Blender's stripped environment
+# The venv already has everything installed; make the add-on dir importable
+# so the worker can find its siblings (align_wav2vec2).
 _addon_dir = os.path.dirname(os.path.abspath(__file__))
-for _p in (_addon_dir,
-           site.getusersitepackages(),
-           "/usr/local/lib/python3.14/site-packages",
-           "/usr/local/lib64/python3.14/site-packages"):
-    if _p not in sys.path:
-        sys.path.insert(0, _p)
+if _addon_dir not in sys.path:
+    sys.path.insert(0, _addon_dir)
 
-# Disable dynamo if torch already loaded
+# Disable dynamo if torch is already imported.
 try:
     import torch as _t
     if hasattr(_t, "_dynamo"):
@@ -44,15 +42,7 @@ def error(msg: str):
     sys.exit(1)
 
 # ---------------------------------------------------------------------------
-# faster-whisper (required)
-# ---------------------------------------------------------------------------
-try:
-    from faster_whisper import WhisperModel
-except ImportError as e:
-    error(f"faster-whisper not found: {e}. Install: pip install faster-whisper")
-
-# ---------------------------------------------------------------------------
-# Aligner (optional — graceful fallback if torch/torchaudio absent)
+# Aligner (installed; graceful fallback if it errors at runtime)
 # ---------------------------------------------------------------------------
 try:
     import align_wav2vec2 as _aligner
@@ -100,7 +90,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
             continue
         s = float(w["start"])
         e = float(w["end"])
-        # Only clamp if genuinely overlapping (start is before prev word ended)
         if s < prev_end:
             s = prev_end
         e = max(e, s + 0.01)
@@ -184,54 +173,38 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     progress(clip_idx / n_clips,
              f"Transcribing clip {clip_idx+1}/{n_clips}: {clip['name']} …")
 
-    # Extract clip audio to a temp WAV at 16kHz mono via ffmpeg.
-    # This serves two purposes:
-    #   1. Timestamps from faster-whisper are always relative to t=0 of the
-    #      WAV, which equals the clip's in-point — no offset math needed.
-    #   2. Avoids clip_timestamps API inconsistencies across faster-whisper
-    #      versions (the parameter behaves differently in 1.0 vs 1.2).
-    tmp_wav = None
-    try:
-        fd, tmp_wav = tempfile.mkstemp(suffix=".wav", prefix="as_")
-        os.close(fd)
-        cmd = [
-            "ffmpeg", "-y", "-loglevel", "error",
-            "-ss", str(trim_start_s),
-            "-t",  str(trim_duration_s),
-            "-i",  audio_path,
-            "-ar", "16000", "-ac", "1",
-            tmp_wav,
-        ]
-        r = _sp.run(cmd, capture_output=True)
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.decode(errors="replace")[:200])
-        transcribe_path = tmp_wav
-        ts_offset = 0.0   # word timestamps from FW are clip-relative
-    except Exception as e:
-        print(f"[worker] ffmpeg extraction failed ({e}) – using source file", flush=True)
-        transcribe_path = audio_path
-        ts_offset = trim_start_s  # must subtract later to get clip-relative
+    # Decode the clip to 16kHz mono float32 using faster-whisper's PyAV-based
+    # decoder. Timestamps are then relative to t=0 of the clip, so no offset
+    # math and no system ffmpeg dependency.
+    from faster_whisper.audio import decode_audio
 
+    clip_audio = None
+    ts_offset  = trim_start_s
     try:
-        seg_gen, info = model.transcribe(
-            transcribe_path,
-            language=language,
-            word_timestamps=True,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=250, speech_pad_ms=100),
-            beam_size=5,
-            temperature=0.0,
-        )
-        segments = list(seg_gen)
-        detected_lang = info.language
+        full  = decode_audio(audio_path, sampling_rate=16000)
+        start = max(0, int(trim_start_s * 16000))
+        stop  = start + int(trim_duration_s * 16000) if trim_duration_s else None
+        clip_audio      = full[start:stop]
+        transcribe_input = clip_audio
+        ts_offset        = 0.0
     except Exception as e:
-        # Clean up temp file before re-raising
-        if tmp_wav and os.path.exists(tmp_wav):
-            try: os.unlink(tmp_wav)
-            except: pass
-        raise
+        print(f"[worker] decode_audio failed ({e}) – using source file", flush=True)
+        transcribe_input = audio_path
+        ts_offset        = trim_start_s  # subtract later to get clip-relative
 
-    # If we fell back to source file, shift timestamps to clip-relative
+    seg_gen, info = model.transcribe(
+        transcribe_input,
+        language=language,
+        word_timestamps=True,
+        vad_filter=True,
+        vad_parameters=dict(min_silence_duration_ms=250, speech_pad_ms=100),
+        beam_size=5,
+        temperature=0.0,
+    )
+    segments = list(seg_gen)
+    detected_lang = info.language
+
+    # If we fell back to the source file, shift timestamps to clip-relative
     if ts_offset > 0:
         class _ShiftedSeg:
             def __init__(self, seg, off):
@@ -251,24 +224,18 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
              f"Clip {clip_idx+1}: {len(segments)} segments"
              + (" – aligning…" if _ALIGN_AVAILABLE else " – (no aligner, using FW timestamps)"))
 
-    # At this point segments are clip-relative (t=0 = clip start) because:
-    #   - Happy path: transcribed from extracted WAV which starts at t=0
-    #   - Fallback path: _ShiftedSeg subtracted ts_offset (= trim_start_s)
-    # The aligner expects clip-relative input and returns clip-relative output.
-    # _words_to_subtitles expects file-relative input (it subtracts trim_start_s),
-    # so we add trim_start_s back when building all_words.
-
+    # Segments are clip-relative here. The aligner takes the clip-relative
+    # audio array; _words_to_subtitles wants file-relative times (it subtracts
+    # trim_start_s), so add trim_start_s back when building all_words.
     all_words = None
-    if _ALIGN_AVAILABLE and segments:
+    if _ALIGN_AVAILABLE and segments and clip_audio is not None:
         try:
-            audio = _aligner.load_audio_segment(audio_path, trim_start_s, trim_duration_s)
             aligned = _aligner.align(
-                segments, audio,
+                segments, clip_audio,
                 language=detected_lang or language or "en",
                 device=device,
             )
             if aligned:
-                # aligned is clip-relative → add trim_start_s → file-relative
                 all_words = [
                     {"word":  w["word"],
                      "start": w["start"] + trim_start_s,
@@ -280,13 +247,12 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
         except Exception as e:
             print(f"[worker] alignment failed: {e}", flush=True)
 
-    # Fallback: faster-whisper word timestamps (already clip-relative)
+    # Fallback: faster-whisper word timestamps (clip-relative → file-relative)
     if not all_words:
         all_words = []
         for seg in segments:
             if seg.words:
                 for w in seg.words:
-                    # clip-relative → file-relative for to_frame()
                     all_words.append({"word": w.word,
                                       "start": w.start + trim_start_s,
                                       "end":   w.end   + trim_start_s})
@@ -296,13 +262,6 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
                                   "end":   seg.end   + trim_start_s})
         progress((clip_idx + 0.8) / n_clips,
                  f"Clip {clip_idx+1}: {len(all_words)} words (faster-whisper timestamps)")
-
-    # Clean up temp WAV
-    if tmp_wav and os.path.exists(tmp_wav):
-        try:
-            os.unlink(tmp_wav)
-        except Exception:
-            pass
 
     subs = _words_to_subtitles(
         all_words, frame_start, frame_end, fps, trim_start_s,
@@ -335,9 +294,13 @@ def main():
     if not clips:
         error("No clips provided")
 
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError as e:
+        error(f"faster-whisper not found: {e}. Click 'Set up dependencies' in the N-panel.")
+
     progress(0.0, f"Loading model '{model_sz}' on {device}"
              + (" + wav2vec2 aligner" if _ALIGN_AVAILABLE else " (no aligner)") + " …")
-
 
     def _load(dev):
         ct = "float16" if dev == "cuda" else "int8"
