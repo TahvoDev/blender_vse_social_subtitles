@@ -123,18 +123,51 @@ def quick_ready() -> bool:
         return False
 
 
-def probe_ready(timeout: int = 180) -> bool:
+def _probe(timeout: int = 300):
+    """
+    Import the key packages in the venv and return (ok, detail).
+
+    detail is the captured stdout/stderr (with tracebacks), plus the list of
+    modules that failed, so a setup failure is diagnosable from the UI/console.
+    """
+    code = (
+        "import importlib, traceback\n"
+        "mods = ['faster_whisper', 'torch', 'transformers']\n"
+        "bad = []\n"
+        "for m in mods:\n"
+        "    try:\n"
+        "        mod = importlib.import_module(m)\n"
+        "        print('OK', m, getattr(mod, '__version__', ''))\n"
+        "    except Exception:\n"
+        "        bad.append(m)\n"
+        "        traceback.print_exc()\n"
+        "print('PROBE_BAD:' + ','.join(bad))\n"
+    )
+    try:
+        r = subprocess.run(
+            [str(venv_python()), "-c", code],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    bad = ""
+    for line in out.splitlines():
+        if line.startswith("PROBE_BAD:"):
+            bad = line[len("PROBE_BAD:"):]
+    ok = (r.returncode == 0) and (bad == "")
+    if bad:
+        out = f"failed to import: {bad}\n\n{out}"
+    return ok, out
+
+
+def probe_ready(timeout: int = 300) -> bool:
     """Full check: quick_ready() plus a real import of the key packages."""
     if not quick_ready():
         return False
-    try:
-        r = subprocess.run(
-            [str(venv_python()), "-c", "import faster_whisper, torch, transformers"],
-            capture_output=True, timeout=timeout,
-        )
-        return r.returncode == 0
-    except Exception:
-        return False
+    ok, _ = _probe(timeout=timeout)
+    return ok
 
 
 # ---------------------------------------------------------------------------
@@ -292,9 +325,12 @@ def setup(progress=None):
     _sentinel_path().write_text(json.dumps(_fingerprint()))
 
     p(0.95, "Verifying installation…")
-    if not probe_ready():
+    ok, detail = _probe()
+    if not ok:
+        print("[bootstrap] import check failed:\n" + detail)
         raise RuntimeError(
-            "Dependencies installed but the import check failed. "
-            "See the Blender system console for details."
+            "Dependencies installed but the import check failed.\n"
+            f"venv: {venv_python()}\n"
+            f"{detail[:800]}"
         )
     p(1.0, "Dependencies ready.")
