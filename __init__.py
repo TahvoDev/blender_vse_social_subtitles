@@ -435,7 +435,12 @@ def _find_cuda_lib_dirs():
 
 
 def _build_worker_env(device):
+    # Isolate the venv interpreter from Blender's/host's PYTHONPATH and user
+    # site-packages, which would otherwise shadow the pinned dependency versions.
     env = os.environ.copy()
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        env.pop(key, None)
+    env["PYTHONNOUSERSITE"] = "1"
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -456,7 +461,8 @@ def _launch_worker(args_path, result_path, device="cpu"):
 
     def _run():
         worker = str(Path(__file__).parent / "transcribe_worker.py")
-        cmd    = [str(vpy), worker, args_path, result_path]
+        # -I = isolated mode: ignores PYTHONPATH/PYTHONHOME and user site-packages.
+        cmd    = [str(vpy), "-I", worker, args_path, result_path]
         print(f"[Auto-Subtitles] Launching worker: {' '.join(cmd)}")
         try:
             proc = subprocess.Popen(

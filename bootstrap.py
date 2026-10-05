@@ -44,6 +44,21 @@ REQUIREMENTS = ADDON_DIR / "requirements.in"
 # Environment / paths
 # ---------------------------------------------------------------------------
 
+def clean_env() -> dict:
+    """
+    A sanitized environment for the venv interpreter.
+
+    Blender and the host shell can export PYTHONPATH/PYTHONHOME (and a user
+    site-packages) that leak unrelated packages into the venv, shadowing the
+    pinned versions. Strip them so the venv is fully isolated.
+    """
+    env = os.environ.copy()
+    for key in ("PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP"):
+        env.pop(key, None)
+    env["PYTHONNOUSERSITE"] = "1"
+    return env
+
+
 def online_access() -> bool:
     """Honour Blender's 'Allow Online Access' preference."""
     try:
@@ -145,8 +160,8 @@ def _probe(timeout: int = 300):
     )
     try:
         r = subprocess.run(
-            [str(venv_python()), "-c", code],
-            capture_output=True, text=True, timeout=timeout,
+            [str(venv_python()), "-I", "-c", code],
+            capture_output=True, text=True, timeout=timeout, env=clean_env(),
         )
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -310,6 +325,20 @@ def setup(progress=None):
           str(vd)], env)
     if not venv_python().exists():
         raise RuntimeError(f"virtual environment not created at {vd}")
+
+    # Belt-and-suspenders: make sure the venv never inherits the base
+    # interpreter's site-packages (which could shadow our pinned versions).
+    cfg = vd / "pyvenv.cfg"
+    try:
+        text = cfg.read_text()
+        patched = text.replace("include-system-site-packages = true",
+                               "include-system-site-packages = false")
+        patched = patched.replace("system-site-packages = true",
+                                  "system-site-packages = false")
+        if patched != text:
+            cfg.write_text(patched)
+    except Exception:
+        pass
 
     p(0.35, "Installing dependencies (this can take several minutes)…")
     seen = [0]
