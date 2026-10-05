@@ -527,15 +527,16 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = _addon_key()
 
     device: bpy.props.EnumProperty(
-        name="Device",
-        description="Compute device for transcription",
+        name="Compute Device",
+        description="Device to use for transcription",
         items=DEVICES,
         default="auto",
     )
 
     def draw(self, context):
         layout = self.layout
-        layout.prop(self, "device")
+        # Expanded buttons, matching the Cycles add-on's compute-device selector.
+        layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
             layout.label(text="Needs a CUDA driver + cuDNN.", icon="INFO")
 
