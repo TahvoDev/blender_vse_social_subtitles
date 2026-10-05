@@ -523,11 +523,6 @@ def _get_device():
         return "auto"
 
 
-def _device_label():
-    dev = _get_device()
-    return dict((item[0], item[1]) for item in DEVICES).get(dev, dev)
-
-
 class AS_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = _addon_key()
 
@@ -738,9 +733,6 @@ class AS_PT_Panel(bpy.types.Panel):
         col.label(text="Transcription", icon="SPEAKER")
         col.prop(scene, "as_model")
         col.prop(scene, "as_language")
-        row = col.row(align=True)
-        row.label(text=f"Device: {_device_label()}", icon="PREFERENCES")
-        row.operator("preferences.addon_show", text="", icon="SETTINGS").module = _addon_key()
 
         layout.separator()
 

@@ -99,8 +99,7 @@ preference — **Edit → Preferences → Add-ons → Auto-Subtitles**:
 - `CUDA (GPU)` — force the NVIDIA GPU
 - `CPU` — force the CPU
 
-The panel's Transcription section shows the current choice with a gear button
-that jumps straight to the preference.
+The device is only in the preferences (not the VSE side panel).
 
 ---
 
