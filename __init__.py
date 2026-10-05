@@ -199,8 +199,9 @@ LANGUAGES = [
 ]
 
 DEVICES = [
-    ("cuda", "CUDA (GPU)", ""),
-    ("cpu",  "CPU",        ""),
+    ("auto", "Auto",       "Use the GPU when available, otherwise the CPU"),
+    ("cuda", "CUDA (GPU)", "Force the NVIDIA GPU"),
+    ("cpu",  "CPU",        "Force the CPU"),
 ]
 
 CASES = [
@@ -215,7 +216,6 @@ def _register_props():
     S = bpy.types.Scene
     S.as_model     = bpy.props.EnumProperty(name="Model",    items=MODELS,    default="base")
     S.as_language  = bpy.props.EnumProperty(name="Language", items=LANGUAGES, default="auto")
-    S.as_device    = bpy.props.EnumProperty(name="Device",   items=DEVICES,   default="cuda")
     S.as_channel   = bpy.props.IntProperty(name="Text Channel", default=5, min=1, max=128)
     S.as_max_chars = bpy.props.IntProperty(name="Max Chars/Line", default=42, min=10, max=120)
     S.as_max_lines = bpy.props.IntProperty(name="Max Lines", default=2, min=1, max=5)
@@ -234,7 +234,7 @@ def _register_props():
 
 def _unregister_props():
     S = bpy.types.Scene
-    for p in ("as_model", "as_language", "as_device", "as_channel",
+    for p in ("as_model", "as_language", "as_channel",
               "as_max_chars", "as_max_lines", "as_max_gap_fr",
               "as_rm_punct", "as_text_case"):
         if hasattr(S, p):
@@ -507,6 +507,45 @@ def _launch_worker(args_path, result_path, device="cpu"):
 
 
 # ---------------------------------------------------------------------------
+# Add-on preferences
+# ---------------------------------------------------------------------------
+
+def _addon_key():
+    return __package__ or __name__
+
+
+def _get_device():
+    """Current compute device from the add-on preferences (default: auto)."""
+    try:
+        prefs = bpy.context.preferences.addons[_addon_key()].preferences
+        return prefs.device
+    except Exception:
+        return "auto"
+
+
+def _device_label():
+    dev = _get_device()
+    return dict((item[0], item[1]) for item in DEVICES).get(dev, dev)
+
+
+class AS_AddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = _addon_key()
+
+    device: bpy.props.EnumProperty(
+        name="Device",
+        description="Compute device for transcription",
+        items=DEVICES,
+        default="auto",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "device")
+        if self.device == "cuda":
+            layout.label(text="Needs a CUDA driver + cuDNN.", icon="INFO")
+
+
+# ---------------------------------------------------------------------------
 # Operators
 # ---------------------------------------------------------------------------
 
@@ -571,12 +610,13 @@ class AS_OT_Transcribe(bpy.types.Operator):
             self.report({"ERROR"}, "Dependencies not installed – click 'Set up dependencies'")
             return {"CANCELLED"}
 
+        device = _get_device()
         fps = scene.render.fps / scene.render.fps_base
         args = {
             "clips":       clips,
             "model":       scene.as_model,
             "language":    None if scene.as_language == "auto" else scene.as_language,
-            "device":      scene.as_device,
+            "device":      device,
             "max_chars":   scene.as_max_chars,
             "max_lines":   scene.as_max_lines,
             "max_gap_s":   scene.as_max_gap_fr / fps,  # convert frames → seconds for worker
@@ -602,7 +642,7 @@ class AS_OT_Transcribe(bpy.types.Operator):
         _job.result_path = res_path
 
         bpy.app.timers.register(_timer_callback, first_interval=0.25)
-        _launch_worker(args_path, res_path, device=scene.as_device)
+        _launch_worker(args_path, res_path, device=device)
 
         self.report({"INFO"}, f"Transcribing {len(clips)} clip(s) – see N-panel for progress")
         return {"FINISHED"}
@@ -698,7 +738,9 @@ class AS_PT_Panel(bpy.types.Panel):
         col.label(text="Transcription", icon="SPEAKER")
         col.prop(scene, "as_model")
         col.prop(scene, "as_language")
-        col.prop(scene, "as_device")
+        row = col.row(align=True)
+        row.label(text=f"Device: {_device_label()}", icon="PREFERENCES")
+        row.operator("preferences.addon_show", text="", icon="SETTINGS").module = _addon_key()
 
         layout.separator()
 
@@ -733,7 +775,7 @@ class AS_PT_Panel(bpy.types.Panel):
 # Registration
 # ---------------------------------------------------------------------------
 
-CLASSES = [AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
+CLASSES = [AS_AddonPreferences, AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
 
 
 def register():

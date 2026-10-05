@@ -83,13 +83,24 @@ the venv. Just click **Reinstall** — it rebuilds in one step.
 |---|---|
 | Model | Whisper model size: `tiny` → `large-v3`. Larger = more accurate, slower. |
 | Language | Source language, or "Auto-detect" |
-| Device | `CUDA` (GPU) or `CPU` |
 | Text Channel | VSE channel number for output TEXT strips |
 | Max Chars/Line | Maximum characters per subtitle line (default 42) |
 | Max Lines | Maximum lines per subtitle block (default 2) |
 | Max Gap (frames) | How long a subtitle lingers after the last word; also splits blocks on longer silences |
 | Text Case | Default / UPPERCASE / lowercase / Title Case |
 | Remove Punctuation | Strip punctuation from output text |
+
+### Device (Add-on Preferences)
+
+The compute device is a global, set-and-forget setting, like Cycles' device
+preference — **Edit → Preferences → Add-ons → Auto-Subtitles**:
+
+- `Auto` (default) — use the GPU when available, otherwise the CPU
+- `CUDA (GPU)` — force the NVIDIA GPU
+- `CPU` — force the CPU
+
+The panel's Transcription section shows the current choice with a gear button
+that jumps straight to the preference.
 
 ---
 
@@ -104,8 +115,8 @@ printed to Blender's system console.
 **"No SOUND or MOVIE strips selected"** — make sure strips are highlighted in
 the VSE before clicking Generate.
 
-**CUDA errors / falling back to CPU** — switch Device to "CPU", or install a
-matching CUDA driver + cuDNN. The default PyPI `torch` wheel is CUDA-capable on
+**CUDA errors / falling back to CPU** — set Device to "CPU" in the add-on
+preferences, or install a matching CUDA driver + cuDNN. The default PyPI `torch` wheel is CUDA-capable on
 Linux.
 
 **Worker exits with a non-zero code** — open Blender's system console
