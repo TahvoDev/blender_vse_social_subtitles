@@ -718,16 +718,16 @@ class AS_PT_Panel(bpy.types.Panel):
         # --- Transcription status ---------------------------------------
         if _job.running:
             box = layout.box()
-            box.label(text="⏳ Running…", icon="TIME")
+            box.label(text="Running…", icon="TIME")
             box.label(text=f"{int(_job.progress * 100)}%  {_job.status}")
             box.operator("as.cancel", icon="CANCEL")
             return
 
         if _job.error:
-            layout.box().label(text="❌ " + _job.error[:80], icon="ERROR")
+            layout.box().label(text=_job.error[:80], icon="ERROR")
 
         if _job.status == "Done!":
-            layout.box().label(text="✅ Subtitles created!", icon="CHECKMARK")
+            layout.box().label(text="Subtitles created", icon="CHECKMARK")
 
         # --- Transcription ----------------------------------------------
         col = layout.column(align=True)
@@ -759,9 +759,8 @@ class AS_PT_Panel(bpy.types.Panel):
         row.enabled = ready
         row.operator("as.transcribe", icon="REC", text="Generate Subtitles")
 
-        strips = _get_strips_all(scene)
-        sel = [s for s in strips if s.select and s.type in ("SOUND", "MOVIE")]
-        layout.label(text=f"{len(sel)} strip(s) selected", icon="INFO")
+        n_clips = len(_collect_selected_clips(scene))
+        layout.label(text=f"{n_clips} clip(s) selected", icon="INFO")
 
 
 # ---------------------------------------------------------------------------
