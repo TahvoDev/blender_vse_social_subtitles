@@ -111,7 +111,7 @@ The device is only in the preferences (not the VSE side panel).
 Allow Online Access**, then retry. Setup failures and full command output are
 printed to Blender's system console.
 
-**"No SOUND or MOVIE strips selected"** — make sure strips are highlighted in
+**"No SOUND or MOVIE clips selected"** — make sure strips are highlighted in
 the VSE before clicking Generate.
 
 **CUDA errors / falling back to CPU** — set Device to "CPU" in the add-on
