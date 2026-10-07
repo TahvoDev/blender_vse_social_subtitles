@@ -599,7 +599,7 @@ class AS_OT_Transcribe(bpy.types.Operator):
         scene = ctx.scene
         clips = _collect_selected_clips(scene)
         if not clips:
-            self.report({"ERROR"}, "No SOUND or MOVIE strips selected")
+            self.report({"ERROR"}, "No SOUND or MOVIE clips selected")
             return {"CANCELLED"}
 
         if not bootstrap.quick_ready():
@@ -755,11 +755,12 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
+        n_clips = len(_collect_selected_clips(scene))
+
         row = layout.row()
-        row.enabled = ready
+        row.enabled = ready and n_clips > 0
         row.operator("as.transcribe", icon="REC", text="Generate Subtitles")
 
-        n_clips = len(_collect_selected_clips(scene))
         layout.label(text=f"{n_clips} clip(s) selected", icon="INFO")
 
 
