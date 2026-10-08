@@ -1,0 +1,27 @@
+{
+  "version": "v1",
+  "blocklist": [],
+  "data": [
+    {
+      "id": "auto_subtitles",
+      "name": "Auto-Subtitles",
+      "tagline": "Transcribe VSE strips into subtitle text strips",
+      "version": "1.4.0",
+      "type": "add-on",
+      "archive_size": 40613,
+      "archive_hash": "sha256:fc7efc8621be4f93ed2393cc4ae2914c60fa0300ba221cecdcb01d0cb7bdc6ea",
+      "archive_url": "https://github.com/TahvoDev/blender_vse_social_subtitles/releases/download/v1.4.0/auto_subtitles-1.4.0.zip",
+      "blender_version_min": "5.0.0",
+      "maintainer": "TahvoDev",
+      "tags": [
+        "Sequencer",
+        "Audio"
+      ],
+      "license": [
+        "SPDX:GPL-3.0-or-later"
+      ],
+      "website": "https://github.com/TahvoDev/blender_vse_social_subtitles",
+      "schema_version": "1.0.0"
+    }
+  ]
+}
