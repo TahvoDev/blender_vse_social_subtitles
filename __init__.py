@@ -785,11 +785,9 @@ class AS_PT_Panel(bpy.types.Panel):
 
         # --- First-run note + primary action -----------------------------
         if not ready:
-            layout.label(
-                text=("Setup downloads the speech engine (~3.2 GB) and models.\n"
-                      "The first run may take a few minutes."),
-                icon="INFO",
-            )
+            note = layout.column(align=True)
+            note.label(text="Setup downloads the speech engine (~3.2 GB) and models.", icon="INFO")
+            note.label(text="The first run may take a few minutes.")
 
         n_clips = len(_collect_selected_clips(scene))
 
