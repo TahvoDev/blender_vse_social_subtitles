@@ -16,6 +16,14 @@ import shutil
 import tempfile
 from pathlib import Path
 
+# Refuse to run inside Blender: data_dir() would resolve to the real
+# extension data dir and purge_data() would delete the real downloads.
+try:
+    import bpy  # noqa: F401
+    raise SystemExit("run this test outside Blender")
+except ImportError:
+    pass
+
 # Exercise the XDG branches on any dev machine.
 _orig_platform = sys.platform
 sys.platform = "linux"
@@ -61,13 +69,13 @@ try:
     assert bootstrap._uv_path() == data / "bin" / "uv"
 
     # 4. purge_data removes everything the add-on owns, nothing else.
-    bootstrap.purge_data()
+    assert bootstrap.purge_data() is True
     assert not data.exists(), "user-data dir must be removed"
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
     # 5. purge is safe to call when nothing was ever downloaded.
-    bootstrap.purge_data()
+    assert bootstrap.purge_data() is True
 
     print("test_paths: OK")
 finally:

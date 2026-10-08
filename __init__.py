@@ -435,8 +435,11 @@ def _build_worker_env(device):
     # dependency versions.
     env = bootstrap.clean_env()
     # Keep whisper/wav2vec2 model downloads inside the extension's user-data
-    # dir so Blender's uninstall removes them too.
+    # dir so Blender's uninstall removes them too. HF_HUB_CACHE is set as well:
+    # an inherited value would otherwise override HF_HOME and the models would
+    # land outside the user-data dir again.
     env["HF_HOME"] = str(bootstrap.hf_dir())
+    env["HF_HUB_CACHE"] = str(bootstrap.hf_dir() / "hub")
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -467,6 +470,12 @@ def _launch_worker(args_path, result_path, device="cpu"):
             )
         except Exception as e:
             _job.queue.put({"kind": "error", "text": str(e)})
+            return
+
+        if not _job.running:
+            # unregistered (disable/uninstall) while we were launching
+            _terminate_proc(proc)
+            _job.cleanup(args_path, result_path)
             return
 
         _job.proc = proc
@@ -699,8 +708,12 @@ class AS_OT_PurgeData(bpy.types.Operator):
             self.report({"WARNING"}, "Setup or transcription is running – cancel it first")
             return {"CANCELLED"}
         bootstrap.terminate_active()
-        bootstrap.purge_data()
-        self.report({"INFO"}, "Downloaded data removed")
+        ok = bootstrap.purge_data()
+        if ok:
+            self.report({"INFO"}, "Downloaded data removed")
+        else:
+            self.report({"WARNING"},
+                        "Some files are still in use and could not be removed")
         return {"FINISHED"}
 
 
@@ -825,6 +838,7 @@ def unregister():
     _terminate_proc(_job.proc)
     _job.proc = None
     bootstrap.terminate_active()
+    _job.cleanup()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
     _unregister_props()

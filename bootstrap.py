@@ -141,18 +141,23 @@ def migrate_legacy_cache():
         dst = data_dir() / name
         try:
             if dst.exists():
-                shutil.rmtree(dst, ignore_errors=True)
-            shutil.move(str(src), str(dst))
+                # A previous migration already produced a current copy; it
+                # wins over possibly-stale legacy data.
+                shutil.rmtree(src, ignore_errors=True)
+            else:
+                shutil.move(str(src), str(dst))
         except Exception as e:
             print(f"[bootstrap] could not migrate {src}: {e}")
             shutil.rmtree(src, ignore_errors=True)
     shutil.rmtree(legacy, ignore_errors=True)
 
 
-def purge_data():
-    """Remove every file this add-on has downloaded (venv, uv, models)."""
-    shutil.rmtree(data_dir(), ignore_errors=True)
+def purge_data() -> bool:
+    """Remove everything this add-on downloaded. True when nothing is left."""
+    target = data_dir()
+    shutil.rmtree(target, ignore_errors=True)
     shutil.rmtree(legacy_cache_dir(), ignore_errors=True)
+    return not target.exists()
 
 
 def venv_dir() -> Path:
@@ -223,20 +228,36 @@ def _probe(timeout: int = 300):
         "        traceback.print_exc()\n"
         "print('PROBE_BAD:' + ','.join(bad))\n"
     )
+    global _active_proc
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             [str(venv_python()), "-I", "-c", code],
-            capture_output=True, text=True, timeout=timeout, env=clean_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=clean_env(),
         )
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+    _active_proc = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+        return False, f"probe timed out after {timeout}s"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        _active_proc = None
 
-    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    out = ((stdout or "") + (stderr or "")).strip()
     bad = ""
     for line in out.splitlines():
         if line.startswith("PROBE_BAD:"):
             bad = line[len("PROBE_BAD:"):]
-    ok = (r.returncode == 0) and (bad == "")
+    ok = (proc.returncode == 0) and (bad == "")
     if bad:
         out = f"failed to import: {bad}\n\n{out}"
     return ok, out
@@ -284,7 +305,8 @@ def ensure_uv(progress=None) -> str:
     target = _uv_path()
     if target.exists():
         try:
-            subprocess.run([str(target), "--version"], check=True, capture_output=True)
+            if _run_tracked([str(target), "--version"]) != 0:
+                raise RuntimeError("uv self-check failed")
             return str(target)
         except Exception:
             pass
@@ -357,6 +379,22 @@ def ensure_uv(progress=None) -> str:
 _active_proc = None
 
 
+def _run_tracked(cmd, timeout=30):
+    """Run a short-lived child, tracked so terminate_active() can kill it."""
+    global _active_proc
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    _active_proc = proc
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        if _active_proc is proc:
+            _active_proc = None
+
+
 def terminate_active():
     """Kill a running setup subprocess (before purge/uninstall)."""
     proc = _active_proc
@@ -390,7 +428,8 @@ def _run(cmd, env, on_line=None):
                     on_line(line)
         proc.wait()
     finally:
-        _active_proc = None
+        if _active_proc is proc:
+            _active_proc = None
     if proc.returncode != 0:
         raise RuntimeError(f"command failed with code {proc.returncode}: {' '.join(cmd)}")
 
