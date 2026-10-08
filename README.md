@@ -102,6 +102,32 @@ preference — **Edit → Preferences → Add-ons → Auto-Subtitles**:
 
 The device is only in the preferences (not the VSE side panel).
 
+### NVIDIA / GPU support
+
+GPU acceleration is optional and needs only the NVIDIA driver — no system CUDA
+toolkit or cuDNN. Two CUDA stacks are involved:
+
+- **Transcription** (ctranslate2, via faster-whisper) uses its CUDA-12 build;
+  `libcublas.so.12` is provided by the pinned `nvidia-cublas-cu12` wheel
+  installed into the add-on's venv (`float16` on GPU, `int8` on CPU).
+- **Word alignment** (the wav2vec2 aligner) runs on torch, which is built
+  against CUDA 13. On Linux that pulls the NVIDIA CUDA 13 runtime (~2–3 GB)
+  from PyPI.
+
+Driver minimums (NVIDIA's documented figures): transcription (CUDA 12)
+supports NVIDIA driver **R525 or newer** (≥ 525.60.13 Linux, ≥ 527.41
+Windows); GPU word alignment (torch / CUDA 13) needs **R580 or newer**
+(≥ 580.65.06 Linux, R580-series on Windows).
+
+Because the two stacks target different CUDA versions, an older driver can
+still transcribe on the GPU while the aligner cannot initialise CUDA; in that
+case alignment silently falls back to faster-whisper's word timestamps and
+transcription stays on the GPU. Set **Device → CPU** to avoid the GPU entirely.
+
+Note: the CUDA runtime is installed on Linux and Windows even on machines
+without an NVIDIA GPU (the PyPI torch wheel is the CUDA build), so the
+download is the same size either way.
+
 ---
 
 ## Uninstall
@@ -138,9 +164,10 @@ printed to Blender's system console.
 the VSE before clicking Generate.
 
 **CUDA errors / falling back to CPU** — GPU transcription needs only the
-NVIDIA driver: `libcublas.so.12` ships with the add-on (setup verifies that it
-loads), so no system CUDA toolkit or cuDNN install is required. The fallback
-message in the N-panel shows which library failed.
+NVIDIA driver: `libcublas.so.12` is installed by the add-on (the pinned
+`nvidia-cublas-cu12` wheel, verified at setup), so no system CUDA toolkit or
+cuDNN install is required. The fallback message in the N-panel shows which
+library failed.
 
 - Works on Fedora/RHEL (`/usr/lib64`), Debian/Ubuntu (multiarch), Arch
   (`/opt/cuda`) and Windows, **x86_64 only**.
