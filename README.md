@@ -4,9 +4,9 @@ Transcribes selected audio/video strips and places TEXT strips in the VSE
 timeline, using **faster-whisper** for transcription and a **wav2vec2 CTC
 forced aligner** for accurate word-level timestamps.
 
-One-click setup: the add-on installs its own runtime dependencies on first use,
-so there is nothing to `pip install` by hand and no Administrator/root access
-required.
+Everything is automatic: on the first **Generate Subtitles** the add-on
+installs its own runtime dependencies, so there is no separate setup step,
+nothing to `pip install` by hand and no Administrator/root access required.
 
 ---
 
@@ -40,11 +40,12 @@ No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
 1. Open the **Video Sequence Editor**, select one or more **SOUND** or **MOVIE**
    strips.
 2. Open the **N-panel** (`N`) → **Auto-Subtitles** tab.
-3. Click **Set up dependencies** (one-time; downloads ~3.2 GB into a private
-   venv). Progress is shown in the panel.
-4. Configure options, then click **Generate Subtitles**.
-5. Progress appears in the panel; TEXT strips are created when done. Model
-   weights download on first use.
+3. Configure options, then click **Generate Subtitles**.
+4. On the first run the add-on downloads the speech engine (~3.2 GB) and the
+   model weights into a private venv, showing progress in the panel, then
+   transcribes automatically. This one-time step takes a few minutes; later
+   runs are fast.
+5. Progress appears in the panel; TEXT strips are created when done.
 
 ---
 
@@ -74,7 +75,7 @@ Blender process                     worker process (private venv)
   no `torchaudio`).
 
 **Note:** a Blender upgrade that changes Blender's Python version invalidates
-the venv. Just click **Reinstall** — it rebuilds in one step.
+the venv. The next **Generate Subtitles** rebuilds it automatically.
 
 ---
 
@@ -138,8 +139,8 @@ extension's user data dir, which contains the venv, uv, the wheel cache and
 the speech models. Nothing is written into the add-on folder itself.
 
 To free disk space without removing the extension, use **Remove Downloaded
-Data** in **Edit → Preferences → Add-ons → Auto-Subtitles** (then re-run
-**Set up dependencies** to reinstall).
+Data** in **Edit → Preferences → Add-ons → Auto-Subtitles** (it re-downloads
+automatically on the next **Generate Subtitles**).
 
 Notes:
 
@@ -154,11 +155,12 @@ Notes:
 
 ## Troubleshooting
 
-**"Dependencies not installed"** — click **Set up dependencies** in the N-panel.
+**The speech engine is missing** — just click **Generate Subtitles**; it
+re-downloads automatically.
 
-**Setup fails / downloads blocked** — enable **Preferences → Get Extensions →
-Allow Online Access**, then retry. Setup failures and full command output are
-printed to Blender's system console.
+**Download fails / blocked** — enable **Preferences → Get Extensions → Allow
+Online Access**, then click **Generate Subtitles** again to retry. Failures and
+full command output are printed to Blender's system console.
 
 **"No SOUND or MOVIE clips selected"** — make sure strips are highlighted in
 the VSE before clicking Generate.
@@ -175,8 +177,8 @@ library failed.
   support, so the cuBLAS package is not installed either.
 - **flatpak/snap** Blender sandboxes without `libcuda.so.1` → CPU only; use
   the native Blender build for GPU.
-- After an add-on upgrade, click **Set up dependencies** again (the pinned
-  requirements changed).
+- After an add-on upgrade the next **Generate Subtitles** re-installs the
+  runtime automatically (the pinned requirements changed).
 - To force CPU anyway, set Device to "CPU" in the add-on preferences.
 
 **Worker exits with a non-zero code** — open Blender's system console

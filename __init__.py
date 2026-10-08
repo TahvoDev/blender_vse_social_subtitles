@@ -156,6 +156,10 @@ class _SetupState:
 _job   = _JobState()
 _setup = _SetupState()
 
+# Worker params (args_path, result_path, device) to launch automatically once a
+# first-run dependency download finishes.
+_pending_run = None
+
 
 # ---------------------------------------------------------------------------
 # Add-on properties
@@ -302,15 +306,31 @@ def _setup_timer():
             _setup.error   = msg["text"]
             _setup.status  = "Setup failed"
             _setup.running = False
+            _finish_pending(False)
         elif kind == "done":
             _setup.progress = 1.0
             _setup.status   = "Ready"
             _setup.running  = False
+            _finish_pending(True)
 
     if changed:
         _redraw_all()
 
-    return 0.25
+    # Unregister as soon as setup ends so a later re-run can register again.
+    return 0.25 if _setup.running else None
+
+
+def _finish_pending(ok):
+    """Launch the waiting transcription after a first-run setup, or clean up."""
+    global _pending_run
+    pending, _pending_run = _pending_run, None
+    if not pending:
+        return
+    args_path, res_path, device = pending
+    if ok:
+        _start_worker(args_path, res_path, device)
+    else:
+        _job.cleanup(args_path, res_path)
 
 
 # ---------------------------------------------------------------------------
@@ -392,14 +412,35 @@ def _create_strips_from_result(result_path):
 # Worker launcher
 # ---------------------------------------------------------------------------
 
+def _start_worker(args_path, result_path, device="cpu"):
+    """Begin a transcription run (worker subprocess + UI timer)."""
+    global _job
+    _job.queue       = queue.Queue()  # drop stale messages from a prior run
+    _job.running     = True
+    _job.progress    = 0.0
+    _job.status      = "Starting…"
+    _job.error       = ""
+    _job.proc        = None
+    _job.args_path   = args_path
+    _job.result_path = result_path
+
+    bpy.app.timers.register(_timer_callback, first_interval=0.25)
+    _launch_worker(args_path, result_path, device=device)
+
+
 def _launch_worker(args_path, result_path, device="cpu"):
     global _job
     vpy = bootstrap.venv_python()
     if not Path(vpy).exists():
         _job.queue.put({"kind": "error",
-                        "text": "Dependencies not installed. Click 'Set up dependencies'."})
+                        "text": "Speech engine not installed – click Generate Subtitles."})
         return
     env = bootstrap.worker_env(device)
+    try:
+        if not bootstrap.online_access():
+            env["HF_HUB_OFFLINE"] = "1"
+    except Exception:
+        pass
 
     def _run():
         worker = str(Path(__file__).parent / "transcribe_worker.py")
@@ -496,7 +537,7 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
         # Expanded buttons, matching the Cycles add-on's compute-device selector.
         layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
-            layout.label(text="Needs the NVIDIA driver – cuBLAS ships with the add-on.", icon="INFO")
+            layout.label(text="Needs the NVIDIA driver – cuBLAS is installed by setup.", icon="INFO")
         layout.separator()
         layout.operator("as.purge_data", icon="TRASH")
 
@@ -505,32 +546,25 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
 # Operators
 # ---------------------------------------------------------------------------
 
-class AS_OT_Setup(bpy.types.Operator):
-    bl_idname      = "as.setup"
-    bl_label       = "Set up dependencies"
-    bl_description = "Download and install the transcription runtime (one-time, ~3.2 GB)"
+def _begin_setup(pending_run=None):
+    """
+    Start the one-time dependency download automatically. When ``pending_run``
+    is given as (args_path, result_path, device) the transcription it belongs
+    to is launched once the download finishes. Returns False if one is running.
+    """
+    global _pending_run
+    if _setup.running:
+        return False
+    _pending_run    = pending_run
+    _setup.queue    = queue.Queue()
+    _setup.running  = True
+    _setup.progress = 0.0
+    _setup.status   = "Preparing…"
+    _setup.error    = ""
 
-    def execute(self, ctx):
-        global _setup
-        if _setup.running:
-            self.report({"WARNING"}, "Dependency setup already running")
-            return {"CANCELLED"}
-        if not bootstrap.online_access():
-            self.report({"ERROR"},
-                        "Enable online access: Preferences > Get Extensions")
-            return {"CANCELLED"}
-
-        _setup.queue    = queue.Queue()
-        _setup.running  = True
-        _setup.progress = 0.0
-        _setup.status   = "Starting…"
-        _setup.error    = ""
-
-        bpy.app.timers.register(_setup_timer, first_interval=0.25)
-        _run_setup_thread()
-
-        self.report({"INFO"}, "Installing dependencies – see N-panel for progress")
-        return {"FINISHED"}
+    bpy.app.timers.register(_setup_timer, first_interval=0.25)
+    _run_setup_thread()
+    return True
 
 
 def _run_setup_thread():
@@ -552,18 +586,14 @@ class AS_OT_Transcribe(bpy.types.Operator):
 
     def execute(self, ctx):
         global _job
-        if _job.running:
-            self.report({"WARNING"}, "Transcription already running")
+        if _job.running or _setup.running:
+            self.report({"WARNING"}, "Already running – see the N-panel")
             return {"CANCELLED"}
 
         scene = ctx.scene
         clips = _collect_selected_clips(scene)
         if not clips:
             self.report({"ERROR"}, "No SOUND or MOVIE clips selected")
-            return {"CANCELLED"}
-
-        if not bootstrap.quick_ready():
-            self.report({"ERROR"}, "Dependencies not installed – click 'Set up dependencies'")
             return {"CANCELLED"}
 
         device = _get_device()
@@ -588,19 +618,25 @@ class AS_OT_Transcribe(bpy.types.Operator):
         with open(args_path, "w", encoding="utf-8") as f:
             json.dump(args, f)
 
-        _job.queue       = queue.Queue()  # drop stale messages from a prior run
-        _job.running     = True
-        _job.progress    = 0.0
-        _job.status      = "Starting…"
-        _job.error       = ""
-        _job.proc        = None
-        _job.args_path   = args_path
-        _job.result_path = res_path
+        if bootstrap.quick_ready():
+            _start_worker(args_path, res_path, device)
+            self.report({"INFO"},
+                        f"Transcribing {len(clips)} clip(s) – see N-panel for progress")
+            return {"FINISHED"}
 
-        bpy.app.timers.register(_timer_callback, first_interval=0.25)
-        _launch_worker(args_path, res_path, device=device)
+        # First run: download the runtime automatically, then transcribe.
+        if not bootstrap.online_access():
+            self.report({"ERROR"},
+                        "Enable online access: Preferences > Get Extensions")
+            _job.cleanup(args_path, res_path)
+            return {"CANCELLED"}
 
-        self.report({"INFO"}, f"Transcribing {len(clips)} clip(s) – see N-panel for progress")
+        if not _begin_setup((args_path, res_path, device)):
+            _job.cleanup(args_path, res_path)
+            self.report({"WARNING"}, "Already running – see the N-panel")
+            return {"CANCELLED"}
+        self.report({"INFO"},
+                    "First run: downloading the speech engine (~3.2 GB), then transcribing…")
         return {"FINISHED"}
 
 
@@ -621,12 +657,22 @@ def _terminate_proc(proc):
 class AS_OT_Cancel(bpy.types.Operator):
     bl_idname      = "as.cancel"
     bl_label       = "Cancel"
-    bl_description = "Cancel the running transcription"
+    bl_description = "Cancel the running setup or transcription"
 
     def execute(self, ctx):
-        global _job
+        global _job, _pending_run
+        if _setup.running:
+            _setup.running = False
+            _setup.status  = "Cancelled"
+            pending, _pending_run = _pending_run, None
+            if pending:
+                _job.cleanup(pending[0], pending[1])
+            bootstrap.terminate_active()
+            self.report({"INFO"}, "Setup cancelled")
+            return {"FINISHED"}
+
         if not _job.running:
-            self.report({"WARNING"}, "No transcription running")
+            self.report({"WARNING"}, "Nothing running")
             return {"CANCELLED"}
 
         _job.running = False
@@ -643,7 +689,7 @@ class AS_OT_Cancel(bpy.types.Operator):
 class AS_OT_PurgeData(bpy.types.Operator):
     bl_idname      = "as.purge_data"
     bl_label       = "Remove Downloaded Data"
-    bl_description = "Delete the venv, downloaded dependencies and speech models (frees disk space; run 'Set up dependencies' to reinstall)"
+    bl_description = "Delete the venv, downloaded dependencies and speech models (frees disk space; they re-download automatically on the next Generate)"
     bl_options     = {"REGISTER"}
 
     def invoke(self, context, event):
@@ -679,31 +725,23 @@ class AS_PT_Panel(bpy.types.Panel):
         scene  = ctx.scene
         global _job, _setup
 
-        # --- Dependencies ------------------------------------------------
         try:
             ready = bootstrap.quick_ready()
         except Exception:
             ready = False
 
-        box = layout.box()
+        # --- First-run download status -----------------------------------
         if _setup.running:
-            box.label(text="Installing dependencies…", icon="TIME")
+            box = layout.box()
+            box.label(text="Setting up speech engine…", icon="TIME")
             box.label(text=f"{int(_setup.progress * 100)}%  {_setup.status}")
-        elif _setup.error:
-            box.label(text="Setup failed", icon="ERROR")
-            box.label(text=_setup.error[:70])
-            box.operator("as.setup", icon="FILE_REFRESH", text="Retry setup")
-        elif not ready:
-            box.label(text="Dependencies not installed", icon="ERROR")
-            box.operator("as.setup", icon="IMPORT", text="Set up dependencies")
-            box.label(text="One-time ~3.2 GB download", icon="INFO")
-        else:
-            row = box.row()
-            row.label(text="Dependencies ready", icon="CHECKMARK")
-            row.operator("as.setup", icon="FILE_REFRESH", text="Reinstall")
-
-        if _setup.running:
+            box.operator("as.cancel", icon="CANCEL")
             return
+
+        if _setup.error:
+            box = layout.box()
+            box.label(text="Setup failed – click Generate to retry", icon="ERROR")
+            box.label(text=_setup.error[:70])
 
         # --- Transcription status ---------------------------------------
         if _job.running:
@@ -745,10 +783,18 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
+        # --- First-run note + primary action -----------------------------
+        if not ready:
+            layout.label(
+                text=("Setup downloads the speech engine (~3.2 GB) and models.\n"
+                      "The first run may take a few minutes."),
+                icon="INFO",
+            )
+
         n_clips = len(_collect_selected_clips(scene))
 
         row = layout.row()
-        row.enabled = ready and n_clips > 0
+        row.enabled = n_clips > 0
         row.operator("as.transcribe", icon="REC", text="Generate Subtitles")
 
         layout.label(text=f"{n_clips} clip(s) selected", icon="INFO")
@@ -758,7 +804,7 @@ class AS_PT_Panel(bpy.types.Panel):
 # Registration
 # ---------------------------------------------------------------------------
 
-CLASSES = [AS_AddonPreferences, AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel,
+CLASSES = [AS_AddonPreferences, AS_OT_Transcribe, AS_OT_Cancel,
            AS_OT_PurgeData, AS_PT_Panel]
 
 
@@ -776,9 +822,14 @@ def register():
 
 
 def unregister():
-    global _job, _setup
+    global _job, _setup, _pending_run
     _job.running   = False
     _setup.running = False
+    # Drop any run waiting on a first-run setup so its temp files don't leak
+    # into a later enable.
+    pending, _pending_run = _pending_run, None
+    if pending:
+        _job.cleanup(pending[0], pending[1])
     # Kill subprocesses first: Blender deletes our user-data dir right after
     # this, and locked files (Windows) would make that delete fail.
     _terminate_proc(_job.proc)

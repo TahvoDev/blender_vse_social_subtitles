@@ -340,7 +340,7 @@ def main():
     try:
         from faster_whisper import WhisperModel
     except ImportError as e:
-        error(f"faster-whisper not found: {e}. Click 'Set up dependencies' in the N-panel.")
+        error(f"faster-whisper not found: {e}. Re-run Generate Subtitles to reinstall.")
 
     progress(0.0, f"Loading model '{model_sz}' on {device}"
              + (" + wav2vec2 aligner" if _ALIGN_AVAILABLE else " (no aligner)") + " …")
