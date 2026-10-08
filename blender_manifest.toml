@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "auto_subtitles"
-version = "1.2.0"
+version = "1.3.0"
 name = "Auto-Subtitles"
 tagline = "Transcribe VSE strips into subtitle text strips"
 maintainer = "TahvoDev"
@@ -13,7 +13,8 @@ license = ["SPDX:GPL-3.0-or-later"]
 tags = ["Sequencer", "Audio"]
 
 # The add-on downloads its own runtime dependencies (uv, wheel packages and
-# speech models) on first use, and reads selected media files.
+# speech models) on first use, stores them in the extension's user data dir,
+# and reads selected media files.
 [permissions]
 network = "Download dependencies and speech models"
-files = "Read selected media, store dependency environment"
+files = "Read selected media, store dependency environment and models"

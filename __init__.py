@@ -434,6 +434,9 @@ def _build_worker_env(device):
     # PYTHONPATH and user site-packages, which would otherwise shadow the pinned
     # dependency versions.
     env = bootstrap.clean_env()
+    # Keep whisper/wav2vec2 model downloads inside the extension's user-data
+    # dir so Blender's uninstall removes them too.
+    bootstrap.pin_model_caches(env)
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -466,7 +469,16 @@ def _launch_worker(args_path, result_path, device="cpu"):
             _job.queue.put({"kind": "error", "text": str(e)})
             return
 
+        # Assign the handle BEFORE the running check: unregister() reads
+        # _job.proc on the main thread, so assigning first guarantees it either
+        # kills this proc or we see running=False ourselves and kill it.
         _job.proc = proc
+        if not _job.running:
+            # unregistered (disable/uninstall) while we were launching
+            _terminate_proc(proc)
+            _job.proc = None
+            _job.cleanup(args_path, result_path)
+            return
 
         def _read_stdout():
             for line in proc.stdout:
@@ -539,6 +551,8 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
         layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
             layout.label(text="Needs a CUDA driver + cuDNN.", icon="INFO")
+        layout.separator()
+        layout.operator("as.purge_data", icon="TRASH")
 
 
 # ---------------------------------------------------------------------------
@@ -644,6 +658,20 @@ class AS_OT_Transcribe(bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _terminate_proc(proc):
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
 class AS_OT_Cancel(bpy.types.Operator):
     bl_idname      = "as.cancel"
     bl_label       = "Cancel"
@@ -658,18 +686,34 @@ class AS_OT_Cancel(bpy.types.Operator):
         _job.running = False
         _job.status  = "Cancelled"
 
-        proc = _job.proc
-        if proc and proc.poll() is None:
-            proc.terminate()
-            try:
-                proc.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.wait()
+        _terminate_proc(_job.proc)
         _job.proc = None
         _job.cleanup()
 
         self.report({"INFO"}, "Transcription cancelled")
+        return {"FINISHED"}
+
+
+class AS_OT_PurgeData(bpy.types.Operator):
+    bl_idname      = "as.purge_data"
+    bl_label       = "Remove Downloaded Data"
+    bl_description = "Delete the venv, downloaded dependencies and speech models (frees disk space; run 'Set up dependencies' to reinstall)"
+    bl_options     = {"REGISTER"}
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, ctx):
+        if _job.running or _setup.running:
+            self.report({"WARNING"}, "Setup or transcription is running – cancel it first")
+            return {"CANCELLED"}
+        bootstrap.terminate_active()
+        ok = bootstrap.purge_data()
+        if ok:
+            self.report({"INFO"}, "Downloaded data removed")
+        else:
+            self.report({"WARNING"},
+                        "Some files are still in use and could not be removed")
         return {"FINISHED"}
 
 
@@ -768,10 +812,17 @@ class AS_PT_Panel(bpy.types.Panel):
 # Registration
 # ---------------------------------------------------------------------------
 
-CLASSES = [AS_AddonPreferences, AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel, AS_PT_Panel]
+CLASSES = [AS_AddonPreferences, AS_OT_Setup, AS_OT_Transcribe, AS_OT_Cancel,
+           AS_OT_PurgeData, AS_PT_Panel]
 
 
 def register():
+    # One-time move of pre-1.3 downloads into the extension's user-data dir,
+    # so Blender's uninstall removes them. Never block enabling on failure.
+    try:
+        bootstrap.migrate_legacy_cache()
+    except Exception as e:
+        print(f"[Auto-Subtitles] legacy cache migration failed: {e}")
     _register_props()
     for cls in CLASSES:
         bpy.utils.register_class(cls)
@@ -782,6 +833,12 @@ def unregister():
     global _job, _setup
     _job.running   = False
     _setup.running = False
+    # Kill subprocesses first: Blender deletes our user-data dir right after
+    # this, and locked files (Windows) would make that delete fail.
+    _terminate_proc(_job.proc)
+    _job.proc = None
+    bootstrap.terminate_active()
+    _job.cleanup()
     for cls in reversed(CLASSES):
         bpy.utils.unregister_class(cls)
     _unregister_props()

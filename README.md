@@ -60,9 +60,10 @@ Blender process                     worker process (private venv)
 
 - `bootstrap.py` uses [uv](https://github.com/astral-sh/uv) to create a venv
   from Blender's own Python and install the pinned dependencies in
-  `requirements.in`. The venv lives outside the add-on (in the per-extension
-  user data dir), so it never writes into the add-on folder and survives add-on
-  updates.
+  `requirements.in`. **Everything the add-on downloads — the venv, uv and its
+  wheel cache, and the whisper/wav2vec2 models — lives in the per-extension
+  user data dir** (`bpy.utils.extension_path_user`), so it never writes into
+  the add-on folder and survives add-on updates.
 - The transcription worker runs in that venv as a separate process, so heavy
   ML libraries (torch, ctranslate2, …) never load inside Blender. This avoids
   the native-library/`torch._dynamo` crashes that occur when such packages are
@@ -103,6 +104,28 @@ The device is only in the preferences (not the VSE side panel).
 
 ---
 
+## Uninstall
+
+Removing the extension (**Edit → Preferences → Add-ons → Extensions →
+Remove**) deletes everything it downloaded: Blender automatically removes the
+extension's user data dir, which contains the venv, uv, the wheel cache and
+the speech models. Nothing is written into the add-on folder itself.
+
+To free disk space without removing the extension, use **Remove Downloaded
+Data** in **Edit → Preferences → Add-ons → Auto-Subtitles** (then re-run
+**Set up dependencies** to reinstall).
+
+Notes:
+
+- Versions ≤ 1.2 kept uv and its wheel cache in `~/.cache/auto_subtitles`;
+  the first run of 1.3+ migrates that into the user data dir (removed on
+  uninstall).
+- Versions ≤ 1.2 downloaded models into the shared `~/.cache/huggingface`.
+  Those files are left alone on purpose (other tools may use the same
+  models); delete that directory yourself if you want them gone.
+
+---
+
 ## Troubleshooting
 
 **"Dependencies not installed"** — click **Set up dependencies** in the N-panel.
@@ -131,4 +154,5 @@ absent):
 
 ```bash
 python3 test_worker.py
+python3 test_paths.py
 ```

@@ -107,22 +107,76 @@ def data_dir() -> Path:
     return p
 
 
-def cache_dir() -> Path:
-    """
-    Stable per-user cache for the uv binary + wheel cache.
+def hf_dir() -> Path:
+    """Where the worker downloads speech models (HF_HOME); wiped on uninstall."""
+    return data_dir() / "hf"
 
-    Kept OUT of the extension's user data dir so reinstalling/updating the
-    add-on never wipes the (multi-GB) downloaded wheels.
+
+def pin_model_caches(env: dict) -> dict:
     """
+    Point every model cache at the user-data dir (mutates env, returns it).
+
+    Sets HF_HOME/HF_HUB_CACHE for faster-whisper and transformers. The
+    deprecated TRANSFORMERS_CACHE* vars are stripped instead of set: an
+    inherited value would win over HF_HUB_CACHE (and make transformers warn),
+    while an unset one falls back to the pinned HF_HUB_CACHE.
+    """
+    hub = str(hf_dir() / "hub")
+    env["HF_HOME"] = str(hf_dir())
+    env["HF_HUB_CACHE"] = hub
+    for key in ("TRANSFORMERS_CACHE", "PYTORCH_TRANSFORMERS_CACHE",
+                "PYTORCH_PRETRAINED_BERT_CACHE"):
+        env.pop(key, None)
+    return env
+
+
+def legacy_cache_dir() -> Path:
+    """Pre-1.3 location of the uv binary + wheel cache (migrated, then removed)."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":
         base = os.path.expanduser("~/Library/Caches")
     else:
         base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    p = Path(base) / "auto_subtitles"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return Path(base) / "auto_subtitles"
+
+
+def migrate_legacy_cache():
+    """
+    Move the pre-1.3 uv binary/wheel cache into the extension user-data dir.
+
+    Everything persistent must live in the user-data dir so Blender's
+    uninstall (which deletes that dir) leaves nothing behind. Idempotent;
+    never touches ~/.cache/huggingface, which is shared with other apps.
+    """
+    legacy = legacy_cache_dir()
+    if not legacy.exists():
+        return
+    for name in ("bin", "uv-cache"):
+        src = legacy / name
+        if not src.exists():
+            continue
+        dst = data_dir() / name
+        try:
+            if dst.exists():
+                # A previous migration already produced a current copy; it
+                # wins over possibly-stale legacy data.
+                shutil.rmtree(src, ignore_errors=True)
+            else:
+                shutil.move(str(src), str(dst))
+        except Exception as e:
+            print(f"[bootstrap] could not migrate {src}: {e}")
+            shutil.rmtree(src, ignore_errors=True)
+    shutil.rmtree(legacy, ignore_errors=True)
+
+
+def purge_data() -> bool:
+    """Remove everything this add-on downloaded. True when nothing is left."""
+    target = data_dir()
+    legacy = legacy_cache_dir()
+    shutil.rmtree(target, ignore_errors=True)
+    shutil.rmtree(legacy, ignore_errors=True)
+    return not target.exists() and not legacy.exists()
 
 
 def venv_dir() -> Path:
@@ -193,20 +247,37 @@ def _probe(timeout: int = 300):
         "        traceback.print_exc()\n"
         "print('PROBE_BAD:' + ','.join(bad))\n"
     )
+    global _active_proc
     try:
-        r = subprocess.run(
+        proc = subprocess.Popen(
             [str(venv_python()), "-I", "-c", code],
-            capture_output=True, text=True, timeout=timeout, env=clean_env(),
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True, env=clean_env(),
         )
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
+    _active_proc = proc
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        try:
+            proc.communicate(timeout=10)
+        except Exception:
+            pass
+        return False, f"probe timed out after {timeout}s"
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+    finally:
+        if _active_proc is proc:
+            _active_proc = None
 
-    out = ((r.stdout or "") + (r.stderr or "")).strip()
+    out = ((stdout or "") + (stderr or "")).strip()
     bad = ""
     for line in out.splitlines():
         if line.startswith("PROBE_BAD:"):
             bad = line[len("PROBE_BAD:"):]
-    ok = (r.returncode == 0) and (bad == "")
+    ok = (proc.returncode == 0) and (bad == "")
     if bad:
         out = f"failed to import: {bad}\n\n{out}"
     return ok, out
@@ -225,7 +296,7 @@ def probe_ready(timeout: int = 300) -> bool:
 # ---------------------------------------------------------------------------
 
 def _uv_path() -> Path:
-    return cache_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
+    return data_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
 
 
 def _download(url: str, dest: Path, progress=None, lo: float = 0.0, hi: float = 1.0):
@@ -254,7 +325,8 @@ def ensure_uv(progress=None) -> str:
     target = _uv_path()
     if target.exists():
         try:
-            subprocess.run([str(target), "--version"], check=True, capture_output=True)
+            if _run_tracked([str(target), "--version"]) != 0:
+                raise RuntimeError("uv self-check failed")
             return str(target)
         except Exception:
             pass
@@ -324,19 +396,60 @@ def ensure_uv(progress=None) -> str:
 # Setup
 # ---------------------------------------------------------------------------
 
+_active_proc = None
+
+
+def _run_tracked(cmd, timeout=30):
+    """Run a short-lived child, tracked so terminate_active() can kill it."""
+    global _active_proc
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    _active_proc = proc
+    try:
+        return proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        raise
+    finally:
+        if _active_proc is proc:
+            _active_proc = None
+
+
+def terminate_active():
+    """Kill a running setup subprocess (before purge/uninstall)."""
+    proc = _active_proc
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
 def _run(cmd, env, on_line=None):
+    global _active_proc
     print(f"[bootstrap] $ {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=env,
     )
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line:
-            print(f"[bootstrap] {line}")
-            if on_line:
-                on_line(line)
-    proc.wait()
+    _active_proc = proc
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                print(f"[bootstrap] {line}")
+                if on_line:
+                    on_line(line)
+        proc.wait()
+    finally:
+        if _active_proc is proc:
+            _active_proc = None
     if proc.returncode != 0:
         raise RuntimeError(f"command failed with code {proc.returncode}: {' '.join(cmd)}")
 
@@ -355,15 +468,14 @@ def setup(progress=None):
     if not REQUIREMENTS.exists():
         raise RuntimeError(f"requirements.in not found at {REQUIREMENTS}")
 
+    # One-time move of the pre-1.3 uv binary/cache from ~/.cache into the
+    # extension's user-data dir (Blender wipes that dir on uninstall).
+    migrate_legacy_cache()
+
     uv = ensure_uv(p)
 
-    # Reclaim space from older versions whose uv binary/cache lived inside the
-    # extension's user data dir (now relocated to cache_dir()).
-    for stale in (data_dir() / "uv-cache", data_dir() / "bin"):
-        shutil.rmtree(stale, ignore_errors=True)
-
     env = os.environ.copy()
-    env["UV_CACHE_DIR"] = str(cache_dir() / "uv-cache")
+    env["UV_CACHE_DIR"] = str(data_dir() / "uv-cache")
     env["UV_NO_PROGRESS"] = "1"
     env["UV_PYTHON_PREFERENCE"] = "only-system"
 
