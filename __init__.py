@@ -392,60 +392,6 @@ def _create_strips_from_result(result_path):
 # Worker launcher
 # ---------------------------------------------------------------------------
 
-def _find_cuda_lib_dirs():
-    """Return candidate directories that may contain CUDA libraries."""
-    import glob
-    candidates = []
-    for d in os.environ.get("LD_LIBRARY_PATH", "").split(":"):
-        if d:
-            candidates.append(d)
-    for pattern in (
-        "/usr/local/cuda*/lib64",
-        "/usr/lib/x86_64-linux-gnu",
-        "/usr/lib/aarch64-linux-gnu",
-        "/usr/lib64",
-        "/opt/cuda/lib64",
-        "/usr/local/lib",
-    ):
-        candidates.extend(glob.glob(pattern))
-    try:
-        import subprocess as _sp
-        out = _sp.check_output(["ldconfig", "-p"], text=True, stderr=_sp.DEVNULL)
-        for line in out.splitlines():
-            if "libcublas" in line and "=>" in line:
-                candidates.append(str(Path(line.split("=>")[-1].strip()).parent))
-    except Exception:
-        pass
-    try:
-        import ctranslate2 as _ct2
-        candidates.append(str(Path(_ct2.__file__).parent))
-    except Exception:
-        pass
-    seen, result = set(), []
-    for d in candidates:
-        if d and d not in seen and os.path.isdir(d):
-            seen.add(d)
-            result.append(d)
-    return result
-
-
-def _build_worker_env(device):
-    # bootstrap.clean_env() isolates the venv interpreter from Blender's/host's
-    # PYTHONPATH and user site-packages, which would otherwise shadow the pinned
-    # dependency versions.
-    env = bootstrap.clean_env()
-    # Keep whisper/wav2vec2 model downloads inside the extension's user-data
-    # dir so Blender's uninstall removes them too.
-    bootstrap.pin_model_caches(env)
-    if device == "cuda":
-        cuda_dirs = _find_cuda_lib_dirs()
-        if cuda_dirs:
-            existing = env.get("LD_LIBRARY_PATH", "")
-            env["LD_LIBRARY_PATH"] = ":".join(cuda_dirs + ([existing] if existing else []))
-            print(f"[Auto-Subtitles] LD_LIBRARY_PATH: {env['LD_LIBRARY_PATH'][:120]}…")
-    return env
-
-
 def _launch_worker(args_path, result_path, device="cpu"):
     global _job
     vpy = bootstrap.venv_python()
@@ -453,7 +399,7 @@ def _launch_worker(args_path, result_path, device="cpu"):
         _job.queue.put({"kind": "error",
                         "text": "Dependencies not installed. Click 'Set up dependencies'."})
         return
-    env = _build_worker_env(device)
+    env = bootstrap.worker_env(device)
 
     def _run():
         worker = str(Path(__file__).parent / "transcribe_worker.py")
@@ -550,7 +496,7 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
         # Expanded buttons, matching the Cycles add-on's compute-device selector.
         layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
-            layout.label(text="Needs a CUDA driver + cuDNN.", icon="INFO")
+            layout.label(text="Needs the NVIDIA driver – cuBLAS ships with the add-on.", icon="INFO")
         layout.separator()
         layout.operator("as.purge_data", icon="TRASH")
 
@@ -562,7 +508,7 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
 class AS_OT_Setup(bpy.types.Operator):
     bl_idname      = "as.setup"
     bl_label       = "Set up dependencies"
-    bl_description = "Download and install the transcription runtime (one-time, ~2.5 GB)"
+    bl_description = "Download and install the transcription runtime (one-time, ~3.2 GB)"
 
     def execute(self, ctx):
         global _setup
@@ -750,7 +696,7 @@ class AS_PT_Panel(bpy.types.Panel):
         elif not ready:
             box.label(text="Dependencies not installed", icon="ERROR")
             box.operator("as.setup", icon="IMPORT", text="Set up dependencies")
-            box.label(text="One-time ~2.5 GB download", icon="INFO")
+            box.label(text="One-time ~3.2 GB download", icon="INFO")
         else:
             row = box.row()
             row.label(text="Dependencies ready", icon="CHECKMARK")

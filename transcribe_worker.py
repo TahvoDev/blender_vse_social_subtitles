@@ -355,7 +355,8 @@ def main():
         msg = str(e)
         if device == "cuda" and any(k in msg for k in
                 ("libcublas","libcuda","cannot be loaded","CUDA")):
-            progress(0.01, "CUDA unavailable – falling back to CPU …")
+            reason = msg.splitlines()[0][:120] if msg else "unknown error"
+            progress(0.01, f"CUDA unavailable – falling back to CPU ({reason}) …")
             try:
                 model, device = _load("cpu"), "cpu"
             except Exception as e2:
@@ -376,7 +377,8 @@ def main():
             msg = str(e)
             if device == "cuda" and any(k in msg for k in
                     ("libcublas","libcuda","cannot be loaded","CUDA")):
-                progress(0.01, "CUDA encode failed – retrying on CPU …")
+                reason = msg.splitlines()[0][:120] if msg else "unknown error"
+                progress(0.01, f"CUDA encode failed – retrying on CPU ({reason}) …")
                 try:
                     model, device = _load("cpu"), "cpu"
                     all_subs.extend(transcribe_clip(clip, model, args, i, len(clips), device))
