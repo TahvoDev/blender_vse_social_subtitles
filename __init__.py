@@ -190,7 +190,7 @@ LANGUAGES = [
     ("sv",   "Swedish",    ""),
     ("da",   "Danish",     ""),
     ("fi",   "Finnish",    ""),
-    ("nb",   "Norwegian",  ""),
+    ("no",   "Norwegian",  ""),
     ("uk",   "Ukrainian",  ""),
     ("cs",   "Czech",      ""),
     ("ro",   "Romanian",   ""),
