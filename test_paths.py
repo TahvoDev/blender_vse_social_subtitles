@@ -68,13 +68,25 @@ try:
     assert bootstrap.hf_dir() == data / "hf"
     assert bootstrap._uv_path() == data / "bin" / "uv"
 
-    # 4. purge_data removes everything the add-on owns, nothing else.
+    # 4. Model-cache env pins every cache under the user-data dir, even when
+    #    the surrounding environment tries to override them.
+    os.environ["HF_HUB_CACHE"] = str(hf_shared / "hub")
+    try:
+        env = bootstrap.hf_env()
+    finally:
+        del os.environ["HF_HUB_CACHE"]
+    assert env["HF_HOME"] == str(data / "hf")
+    for key in ("HF_HUB_CACHE", "TRANSFORMERS_CACHE",
+                "PYTORCH_TRANSFORMERS_CACHE", "PYTORCH_PRETRAINED_BERT_CACHE"):
+        assert env[key] == str(data / "hf" / "hub"), (key, env[key])
+
+    # 5. purge_data removes everything the add-on owns, nothing else.
     assert bootstrap.purge_data() is True
     assert not data.exists(), "user-data dir must be removed"
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
-    # 5. purge is safe to call when nothing was ever downloaded.
+    # 6. purge is safe to call when nothing was ever downloaded.
     assert bootstrap.purge_data() is True
 
     print("test_paths: OK")

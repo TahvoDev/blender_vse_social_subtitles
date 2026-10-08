@@ -435,11 +435,8 @@ def _build_worker_env(device):
     # dependency versions.
     env = bootstrap.clean_env()
     # Keep whisper/wav2vec2 model downloads inside the extension's user-data
-    # dir so Blender's uninstall removes them too. HF_HUB_CACHE is set as well:
-    # an inherited value would otherwise override HF_HOME and the models would
-    # land outside the user-data dir again.
-    env["HF_HOME"] = str(bootstrap.hf_dir())
-    env["HF_HUB_CACHE"] = str(bootstrap.hf_dir() / "hub")
+    # dir so Blender's uninstall removes them too.
+    env.update(bootstrap.hf_env())
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
@@ -472,13 +469,16 @@ def _launch_worker(args_path, result_path, device="cpu"):
             _job.queue.put({"kind": "error", "text": str(e)})
             return
 
+        # Assign the handle BEFORE the running check: unregister() reads
+        # _job.proc on the main thread, so assigning first guarantees it either
+        # kills this proc or we see running=False ourselves and kill it.
+        _job.proc = proc
         if not _job.running:
             # unregistered (disable/uninstall) while we were launching
             _terminate_proc(proc)
+            _job.proc = None
             _job.cleanup(args_path, result_path)
             return
-
-        _job.proc = proc
 
         def _read_stdout():
             for line in proc.stdout:

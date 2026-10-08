@@ -112,6 +112,24 @@ def hf_dir() -> Path:
     return data_dir() / "hf"
 
 
+def hf_env() -> dict:
+    """
+    Env vars pinning every model cache inside the user-data dir.
+
+    HF_HUB_CACHE/TRANSFORMERS_CACHE override inherited user settings that
+    would otherwise send downloads outside the add-on's scope (an inherited
+    HF_HOME alone does not win over them).
+    """
+    hub = str(hf_dir() / "hub")
+    return {
+        "HF_HOME": str(hf_dir()),
+        "HF_HUB_CACHE": hub,
+        "TRANSFORMERS_CACHE": hub,
+        "PYTORCH_TRANSFORMERS_CACHE": hub,
+        "PYTORCH_PRETRAINED_BERT_CACHE": hub,
+    }
+
+
 def legacy_cache_dir() -> Path:
     """Pre-1.3 location of the uv binary + wheel cache (migrated, then removed)."""
     if sys.platform == "win32":
@@ -155,9 +173,10 @@ def migrate_legacy_cache():
 def purge_data() -> bool:
     """Remove everything this add-on downloaded. True when nothing is left."""
     target = data_dir()
+    legacy = legacy_cache_dir()
     shutil.rmtree(target, ignore_errors=True)
-    shutil.rmtree(legacy_cache_dir(), ignore_errors=True)
-    return not target.exists()
+    shutil.rmtree(legacy, ignore_errors=True)
+    return not target.exists() and not legacy.exists()
 
 
 def venv_dir() -> Path:
@@ -250,7 +269,8 @@ def _probe(timeout: int = 300):
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
     finally:
-        _active_proc = None
+        if _active_proc is proc:
+            _active_proc = None
 
     out = ((stdout or "") + (stderr or "")).strip()
     bad = ""
@@ -382,7 +402,7 @@ _active_proc = None
 def _run_tracked(cmd, timeout=30):
     """Run a short-lived child, tracked so terminate_active() can kill it."""
     global _active_proc
-    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _active_proc = proc
     try:
         return proc.wait(timeout=timeout)
