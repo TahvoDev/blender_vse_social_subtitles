@@ -22,14 +22,28 @@ nothing to `pip install` by hand and no Administrator/root access required.
 
 ## Installation
 
-1. Zip the add-on folder so `blender_manifest.toml` and `__init__.py` are at the
-   archive root:
-   ```bash
-   zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
-       transcribe_worker.py align_wav2vec2.py requirements.in LICENSE THIRDPARTY.md
-   ```
+1. Download the latest `auto_subtitles-<version>.zip` from the
+   [**Releases**](https://github.com/TahvoDev/blender_vse_social_subtitles/releases/latest)
+   page.
 2. In Blender: **Edit → Preferences → Add-ons → Install…** → select the zip.
 3. Enable **"Auto-Subtitles"**.
+
+That's the whole install — no `pip install`, no Administrator/root access. The
+runtime is downloaded on first use into Blender's per-extension user data
+directory and removed when you uninstall the add-on.
+
+<details>
+<summary>Build from source instead</summary>
+
+Zip the add-on folder so `blender_manifest.toml` and `__init__.py` are at the
+archive root, then install that zip the same way:
+
+```bash
+zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
+    transcribe_worker.py align_wav2vec2.py requirements.in LICENSE THIRDPARTY.md
+```
+
+</details>
 
 ---
 
