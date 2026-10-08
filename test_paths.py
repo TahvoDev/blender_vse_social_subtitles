@@ -68,17 +68,18 @@ try:
     assert bootstrap.hf_dir() == data / "hf"
     assert bootstrap._uv_path() == data / "bin" / "uv"
 
-    # 4. Model-cache env pins every cache under the user-data dir, even when
+    # 4. Model-cache pinning: HF caches land under the user-data dir even when
     #    the surrounding environment tries to override them.
-    os.environ["HF_HUB_CACHE"] = str(hf_shared / "hub")
-    try:
-        env = bootstrap.hf_env()
-    finally:
-        del os.environ["HF_HUB_CACHE"]
+    pinned = {"HF_HOME": "/elsewhere", "HF_HUB_CACHE": "/elsewhere/hub",
+              "TRANSFORMERS_CACHE": "/elsewhere/tf",
+              "PYTORCH_TRANSFORMERS_CACHE": "/elsewhere/pt",
+              "PYTORCH_PRETRAINED_BERT_CACHE": "/elsewhere/bert"}
+    env = bootstrap.pin_model_caches(pinned)
     assert env["HF_HOME"] == str(data / "hf")
-    for key in ("HF_HUB_CACHE", "TRANSFORMERS_CACHE",
-                "PYTORCH_TRANSFORMERS_CACHE", "PYTORCH_PRETRAINED_BERT_CACHE"):
-        assert env[key] == str(data / "hf" / "hub"), (key, env[key])
+    assert env["HF_HUB_CACHE"] == str(data / "hf" / "hub")
+    for key in ("TRANSFORMERS_CACHE", "PYTORCH_TRANSFORMERS_CACHE",
+                "PYTORCH_PRETRAINED_BERT_CACHE"):
+        assert key not in env, f"inherited {key} must be stripped"
 
     # 5. purge_data removes everything the add-on owns, nothing else.
     assert bootstrap.purge_data() is True

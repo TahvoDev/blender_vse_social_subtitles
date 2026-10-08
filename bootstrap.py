@@ -112,22 +112,22 @@ def hf_dir() -> Path:
     return data_dir() / "hf"
 
 
-def hf_env() -> dict:
+def pin_model_caches(env: dict) -> dict:
     """
-    Env vars pinning every model cache inside the user-data dir.
+    Point every model cache at the user-data dir (mutates env, returns it).
 
-    HF_HUB_CACHE/TRANSFORMERS_CACHE override inherited user settings that
-    would otherwise send downloads outside the add-on's scope (an inherited
-    HF_HOME alone does not win over them).
+    Sets HF_HOME/HF_HUB_CACHE for faster-whisper and transformers. The
+    deprecated TRANSFORMERS_CACHE* vars are stripped instead of set: an
+    inherited value would win over HF_HUB_CACHE (and make transformers warn),
+    while an unset one falls back to the pinned HF_HUB_CACHE.
     """
     hub = str(hf_dir() / "hub")
-    return {
-        "HF_HOME": str(hf_dir()),
-        "HF_HUB_CACHE": hub,
-        "TRANSFORMERS_CACHE": hub,
-        "PYTORCH_TRANSFORMERS_CACHE": hub,
-        "PYTORCH_PRETRAINED_BERT_CACHE": hub,
-    }
+    env["HF_HOME"] = str(hf_dir())
+    env["HF_HUB_CACHE"] = hub
+    for key in ("TRANSFORMERS_CACHE", "PYTORCH_TRANSFORMERS_CACHE",
+                "PYTORCH_PRETRAINED_BERT_CACHE"):
+        env.pop(key, None)
+    return env
 
 
 def legacy_cache_dir() -> Path:

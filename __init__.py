@@ -436,7 +436,7 @@ def _build_worker_env(device):
     env = bootstrap.clean_env()
     # Keep whisper/wav2vec2 model downloads inside the extension's user-data
     # dir so Blender's uninstall removes them too.
-    env.update(bootstrap.hf_env())
+    bootstrap.pin_model_caches(env)
     if device == "cuda":
         cuda_dirs = _find_cuda_lib_dirs()
         if cuda_dirs:
