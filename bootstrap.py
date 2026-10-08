@@ -107,22 +107,52 @@ def data_dir() -> Path:
     return p
 
 
-def cache_dir() -> Path:
-    """
-    Stable per-user cache for the uv binary + wheel cache.
+def hf_dir() -> Path:
+    """Where the worker downloads speech models (HF_HOME); wiped on uninstall."""
+    return data_dir() / "hf"
 
-    Kept OUT of the extension's user data dir so reinstalling/updating the
-    add-on never wipes the (multi-GB) downloaded wheels.
-    """
+
+def legacy_cache_dir() -> Path:
+    """Pre-1.3 location of the uv binary + wheel cache (migrated, then removed)."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":
         base = os.path.expanduser("~/Library/Caches")
     else:
         base = os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
-    p = Path(base) / "auto_subtitles"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return Path(base) / "auto_subtitles"
+
+
+def migrate_legacy_cache():
+    """
+    Move the pre-1.3 uv binary/wheel cache into the extension user-data dir.
+
+    Everything persistent must live in the user-data dir so Blender's
+    uninstall (which deletes that dir) leaves nothing behind. Idempotent;
+    never touches ~/.cache/huggingface, which is shared with other apps.
+    """
+    legacy = legacy_cache_dir()
+    if not legacy.exists():
+        return
+    for name in ("bin", "uv-cache"):
+        src = legacy / name
+        if not src.exists():
+            continue
+        dst = data_dir() / name
+        try:
+            if dst.exists():
+                shutil.rmtree(dst, ignore_errors=True)
+            shutil.move(str(src), str(dst))
+        except Exception as e:
+            print(f"[bootstrap] could not migrate {src}: {e}")
+            shutil.rmtree(src, ignore_errors=True)
+    shutil.rmtree(legacy, ignore_errors=True)
+
+
+def purge_data():
+    """Remove every file this add-on has downloaded (venv, uv, models)."""
+    shutil.rmtree(data_dir(), ignore_errors=True)
+    shutil.rmtree(legacy_cache_dir(), ignore_errors=True)
 
 
 def venv_dir() -> Path:
@@ -225,7 +255,7 @@ def probe_ready(timeout: int = 300) -> bool:
 # ---------------------------------------------------------------------------
 
 def _uv_path() -> Path:
-    return cache_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
+    return data_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
 
 
 def _download(url: str, dest: Path, progress=None, lo: float = 0.0, hi: float = 1.0):
@@ -324,19 +354,43 @@ def ensure_uv(progress=None) -> str:
 # Setup
 # ---------------------------------------------------------------------------
 
+_active_proc = None
+
+
+def terminate_active():
+    """Kill a running setup subprocess (before purge/uninstall)."""
+    proc = _active_proc
+    if proc is None or proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=5)
+    except Exception:
+        proc.kill()
+        try:
+            proc.wait(timeout=5)
+        except Exception:
+            pass
+
+
 def _run(cmd, env, on_line=None):
+    global _active_proc
     print(f"[bootstrap] $ {' '.join(cmd)}")
     proc = subprocess.Popen(
         cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, bufsize=1, env=env,
     )
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line:
-            print(f"[bootstrap] {line}")
-            if on_line:
-                on_line(line)
-    proc.wait()
+    _active_proc = proc
+    try:
+        for line in proc.stdout:
+            line = line.rstrip()
+            if line:
+                print(f"[bootstrap] {line}")
+                if on_line:
+                    on_line(line)
+        proc.wait()
+    finally:
+        _active_proc = None
     if proc.returncode != 0:
         raise RuntimeError(f"command failed with code {proc.returncode}: {' '.join(cmd)}")
 
@@ -355,15 +409,14 @@ def setup(progress=None):
     if not REQUIREMENTS.exists():
         raise RuntimeError(f"requirements.in not found at {REQUIREMENTS}")
 
+    # One-time move of the pre-1.3 uv binary/cache from ~/.cache into the
+    # extension's user-data dir (Blender wipes that dir on uninstall).
+    migrate_legacy_cache()
+
     uv = ensure_uv(p)
 
-    # Reclaim space from older versions whose uv binary/cache lived inside the
-    # extension's user data dir (now relocated to cache_dir()).
-    for stale in (data_dir() / "uv-cache", data_dir() / "bin"):
-        shutil.rmtree(stale, ignore_errors=True)
-
     env = os.environ.copy()
-    env["UV_CACHE_DIR"] = str(cache_dir() / "uv-cache")
+    env["UV_CACHE_DIR"] = str(data_dir() / "uv-cache")
     env["UV_NO_PROGRESS"] = "1"
     env["UV_PYTHON_PREFERENCE"] = "only-system"
 
