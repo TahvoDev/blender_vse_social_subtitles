@@ -28,7 +28,7 @@ No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
    archive root:
    ```bash
    zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
-       transcribe_worker.py align_wav2vec2.py requirements.in
+       transcribe_worker.py align_wav2vec2.py requirements.in LICENSE THIRDPARTY.md
    ```
 2. In Blender: **Edit → Preferences → Add-ons → Install…** → select the zip.
 3. Enable **"Auto-Subtitles"**.
