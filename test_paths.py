@@ -90,6 +90,68 @@ try:
     # 6. purge is safe to call when nothing was ever downloaded.
     assert bootstrap.purge_data() is True
 
+    # 7. CUDA discovery finds the venv's pip-provided cublas dir — and only
+    #    that one: torch's CUDA 13 tree must stay off the loader path.
+    nv = data / "venv" / "lib" / "python3.11" / "site-packages" / "nvidia"
+    cub = nv / "cublas" / "lib"
+    cub.mkdir(parents=True)
+    (cub / "libcublas.so.12").write_text("")
+    (cub / "libcublasLt.so.12").write_text("")
+    decoy = nv / "cu13" / "lib"
+    decoy.mkdir(parents=True)
+    (decoy / "libcublas.so.13").write_text("")
+    dirs = bootstrap.find_cuda_lib_dirs()
+    assert str(cub) in dirs, (cub, dirs)
+    assert str(decoy) not in dirs, "torch cu13 libs must not be exposed"
+    assert len(dirs) == len(set(dirs)), "duplicate candidate dirs"
+
+    # 8. LD_LIBRARY_PATH candidates are kept once, non-existent ones dropped.
+    _saved_ld = os.environ.get("LD_LIBRARY_PATH")
+    os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
+        [str(cub), str(cub), str(tmp / "nope")])
+    try:
+        dirs = bootstrap.find_cuda_lib_dirs()
+        assert dirs.count(str(cub)) == 1, dirs
+        assert str(tmp / "nope") not in dirs, dirs
+    finally:
+        if _saved_ld is None:
+            os.environ.pop("LD_LIBRARY_PATH", None)
+        else:
+            os.environ["LD_LIBRARY_PATH"] = _saved_ld
+
+    # 9. The worker env augments the loader path for cuda AND auto (the
+    #    default preference value), never for cpu, and stays isolated.
+    for dev in ("cuda", "auto"):
+        env = bootstrap.worker_env(dev)
+        assert str(cub) in env.get("LD_LIBRARY_PATH", "").split(os.pathsep), (dev, env.get("LD_LIBRARY_PATH"))
+        assert "PYTHONPATH" not in env and "PYTHONHOME" not in env, dev
+    env = bootstrap.worker_env("cpu")
+    assert str(cub) not in (env.get("LD_LIBRARY_PATH") or ""), env.get("LD_LIBRARY_PATH")
+
+    # 10. Windows branch: venv Lib/site-packages layout, PATH (not
+    #     LD_LIBRARY_PATH), joined with os.pathsep, original PATH kept.
+    #     data_dir() resolves win32 through LOCALAPPDATA, not XDG_DATA_HOME.
+    os.environ["LOCALAPPDATA"] = str(tmp / "localappdata")
+    _saved_platform = sys.platform
+    sys.platform = "win32"
+    try:
+        wbin = (Path(os.environ["LOCALAPPDATA"]) / "auto_subtitles" / "venv" /
+                "Lib" / "site-packages" / "nvidia" / "cublas" / "bin")
+        wbin.mkdir(parents=True)
+        (wbin / "cublas64_12.dll").write_text("")
+        wdirs = bootstrap.find_cuda_lib_dirs()
+        assert str(wbin) in wdirs, (wbin, wdirs)
+        wenv = bootstrap.worker_env("auto")
+        parts = wenv["PATH"].split(os.pathsep)
+        assert str(wbin) in parts, wenv["PATH"]
+        for comp in os.environ.get("PATH", "").split(os.pathsep):
+            if comp:
+                assert comp in parts, (comp, wenv["PATH"])
+        assert str(wbin) not in (wenv.get("LD_LIBRARY_PATH") or "")
+    finally:
+        sys.platform = _saved_platform
+        os.environ.pop("LOCALAPPDATA", None)
+
     print("test_paths: OK")
 finally:
     sys.platform = _orig_platform

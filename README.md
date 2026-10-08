@@ -16,7 +16,7 @@ required.
 - Internet access for the one-time dependency download (the add-on declares the
   `network` permission and honours **Preferences → Get Extensions → Allow
   Online Access**)
-- NVIDIA GPU + CUDA optional — falls back to CPU automatically
+- NVIDIA GPU + driver optional — falls back to CPU automatically
 
 No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
 
@@ -40,7 +40,7 @@ No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
 1. Open the **Video Sequence Editor**, select one or more **SOUND** or **MOVIE**
    strips.
 2. Open the **N-panel** (`N`) → **Auto-Subtitles** tab.
-3. Click **Set up dependencies** (one-time; downloads ~2.5 GB into a private
+3. Click **Set up dependencies** (one-time; downloads ~3.2 GB into a private
    venv). Progress is shown in the panel.
 4. Configure options, then click **Generate Subtitles**.
 5. Progress appears in the panel; TEXT strips are created when done. Model
@@ -137,9 +137,20 @@ printed to Blender's system console.
 **"No SOUND or MOVIE clips selected"** — make sure strips are highlighted in
 the VSE before clicking Generate.
 
-**CUDA errors / falling back to CPU** — set Device to "CPU" in the add-on
-preferences, or install a matching CUDA driver + cuDNN. The default PyPI `torch` wheel is CUDA-capable on
-Linux.
+**CUDA errors / falling back to CPU** — GPU transcription needs only the
+NVIDIA driver: `libcublas.so.12` ships with the add-on (setup verifies that it
+loads), so no system CUDA toolkit or cuDNN install is required. The fallback
+message in the N-panel shows which library failed.
+
+- Works on Fedora/RHEL (`/usr/lib64`), Debian/Ubuntu (multiarch), Arch
+  (`/opt/cuda`) and Windows, **x86_64 only**.
+- **linux aarch64 is CPU-only**: the ctranslate2 wheel there has no GPU
+  support, so the cuBLAS package is not installed either.
+- **flatpak/snap** Blender sandboxes without `libcuda.so.1` → CPU only; use
+  the native Blender build for GPU.
+- After an add-on upgrade, click **Set up dependencies** again (the pinned
+  requirements changed).
+- To force CPU anyway, set Device to "CPU" in the add-on preferences.
 
 **Worker exits with a non-zero code** — open Blender's system console
 (Window → Toggle System Console, or launch Blender from a terminal) to see the

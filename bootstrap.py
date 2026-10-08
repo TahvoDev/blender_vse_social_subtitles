@@ -14,6 +14,7 @@ All network access is gated on Blender's "Allow Online Access" preference
 import os
 import sys
 import json
+import glob
 import hashlib
 import platform
 import shutil
@@ -189,6 +190,80 @@ def venv_python() -> Path:
     return venv_dir() / "bin" / "python"
 
 
+# ---------------------------------------------------------------------------
+# Worker environment (CUDA library discovery)
+# ---------------------------------------------------------------------------
+
+def find_cuda_lib_dirs() -> list:
+    """
+    Directories that may contain the CUDA libraries ctranslate2 dlopens.
+
+    System candidates first (a toolkit install wins over the pip copy), then
+    the add-on venv's own nvidia/cublas tree — the only place pip-provided
+    libcublas.so.12 lives, and the only place visible to flatpak/snap Blender
+    where host /usr is not.
+    """
+    candidates = []
+    for d in os.environ.get("LD_LIBRARY_PATH", "").split(os.pathsep):
+        if d:
+            candidates.append(d)
+    for pattern in (
+        "/usr/local/cuda*/lib64",
+        "/usr/lib/x86_64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib64",
+        "/opt/cuda/lib64",
+        "/usr/local/lib",
+    ):
+        candidates.extend(glob.glob(pattern))
+    try:
+        out = subprocess.check_output(["ldconfig", "-p"], text=True,
+                                      stderr=subprocess.DEVNULL)
+        for line in out.splitlines():
+            if "libcublas" in line and "=>" in line:
+                candidates.append(str(Path(line.split("=>")[-1].strip()).parent))
+    except Exception:
+        pass
+    # ct2 needs only libcublas.so.12 + libcublasLt.so.12, both in
+    # nvidia/cublas/lib. Deliberately not nvidia/*/lib: that would also put
+    # torch's CUDA 13 libs on the loader path for no benefit.
+    if sys.platform == "win32":
+        candidates.extend(glob.glob(
+            str(venv_dir() / "Lib/site-packages/nvidia/cublas/bin")))
+    else:
+        candidates.extend(glob.glob(
+            str(venv_dir() / "lib/python*/site-packages/nvidia/cublas/lib")))
+    seen, result = set(), []
+    for d in candidates:
+        if d and d not in seen and os.path.isdir(d):
+            seen.add(d)
+            result.append(d)
+    return result
+
+
+def worker_env(device: str = "auto") -> dict:
+    """
+    Environment for the transcription worker.
+
+    Anything but "cpu" gets the CUDA lib dirs on the loader path: the
+    preference default is "auto" and the worker resolves auto → cuda itself,
+    so gating on "cuda" here would leave the default config un-augmented.
+    """
+    env = clean_env()
+    pin_model_caches(env)
+    if device == "cpu":
+        return env
+    key = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
+    cuda_dirs = find_cuda_lib_dirs()
+    existing = env.get(key, "")
+    merged = cuda_dirs + [d for d in existing.split(os.pathsep)
+                          if d and d not in cuda_dirs]
+    if merged:
+        env[key] = os.pathsep.join(merged)
+        print(f"[Auto-Subtitles] {key}: {env[key][:120]}…")
+    return env
+
+
 def _sentinel_path() -> Path:
     return venv_dir() / ".auto_subtitles.json"
 
@@ -233,6 +308,11 @@ def _probe(timeout: int = 300):
 
     detail is the captured stdout/stderr (with tracebacks), plus the list of
     modules that failed, so a setup failure is diagnosable from the UI/console.
+
+    Also *loads* libcublas when the venv ships one (see worker_env): a
+    present-but-unloadable library would otherwise only surface as a silent
+    CPU fallback at the first transcription. That condition prefixes detail
+    with "WARNING:" but does not make the probe fail — CPU still works.
     """
     code = (
         "import importlib, traceback\n"
@@ -246,13 +326,28 @@ def _probe(timeout: int = 300):
         "        bad.append(m)\n"
         "        traceback.print_exc()\n"
         "print('PROBE_BAD:' + ','.join(bad))\n"
+        "import ctypes, glob, os, sys\n"
+        "if sys.platform == 'win32':\n"
+        "    cub = glob.glob(os.path.join(sys.prefix, 'Lib', 'site-packages',"
+        " 'nvidia', 'cublas', 'bin'))\n"
+        "    lib = 'cublas64_12.dll'\n"
+        "else:\n"
+        "    cub = glob.glob(os.path.join(sys.prefix, 'lib', 'python*',"
+        " 'site-packages', 'nvidia', 'cublas', 'lib'))\n"
+        "    lib = 'libcublas.so.12'\n"
+        "if cub:\n"
+        "    try:\n"
+        "        ctypes.CDLL(lib)\n"
+        "        print('OK', lib, 'from', cub[0])\n"
+        "    except OSError as e:\n"
+        "        print('CUBLAS_FAIL:' + str(e))\n"
     )
     global _active_proc
     try:
         proc = subprocess.Popen(
             [str(venv_python()), "-I", "-c", code],
             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, env=clean_env(),
+            text=True, env=worker_env("auto"),
         )
     except Exception as e:
         return False, f"{type(e).__name__}: {e}"
@@ -274,12 +369,18 @@ def _probe(timeout: int = 300):
 
     out = ((stdout or "") + (stderr or "")).strip()
     bad = ""
+    cublas_err = ""
     for line in out.splitlines():
         if line.startswith("PROBE_BAD:"):
             bad = line[len("PROBE_BAD:"):]
+        elif line.startswith("CUBLAS_FAIL:"):
+            cublas_err = line[len("CUBLAS_FAIL:"):]
     ok = (proc.returncode == 0) and (bad == "")
     if bad:
         out = f"failed to import: {bad}\n\n{out}"
+    if cublas_err:
+        out = f"WARNING: libcublas present but failed to load: {cublas_err}\n\n{out}"
+        print(f"[bootstrap] cublas load check failed: {cublas_err}")
     return ok, out
 
 
@@ -527,4 +628,5 @@ def setup(progress=None):
             f"venv: {venv_python()}\n"
             f"{detail[:800]}"
         )
-    p(1.0, "Dependencies ready.")
+    p(1.0, "Setup done, but the GPU library check failed – see console."
+        if detail.startswith("WARNING:") else "Dependencies ready.")

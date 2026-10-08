@@ -4,9 +4,12 @@
 # bootstrap.py). Only top-level packages are pinned; uv resolves and installs
 # the transitive closure for whichever Python Blender is running.
 #
-# CUDA: the default PyPI `torch` wheel on Linux is CUDA-capable, so the
-# add-on's Device toggle keeps working when a CUDA driver + cuDNN are present.
-# On CPU-only machines it falls back to CPU automatically.
+# CUDA: ctranslate2 dlopens libcublas.so.12 (its wheel is a CUDA 12.4 build),
+# while the default PyPI `torch` wheel ships CUDA 13 libs only. The pin below
+# supplies libcublas.so.12 from PyPI; the only system requirement for GPU on
+# linux x86_64 / Windows is the NVIDIA driver (libcuda.so.1). Machines
+# without a driver — and linux aarch64, where ctranslate2 is CPU-only —
+# transcribe on CPU.
 
 faster-whisper==1.2.1
 ctranslate2==4.8.2
@@ -15,3 +18,13 @@ av==19.0.1
 numpy==2.5.3
 torch==2.11.0
 transformers==4.57.6
+# ct2 dlopens libcublas.so.12 (CUDA 12 build); torch's default PyPI wheel now
+# ships CUDA 13 libs only (nvidia/cu13/lib/libcublas.so.13).
+# Marker: no macOS wheel (Darwin ctranslate2 wheels are CPU-only); linux
+# narrowed to x86_64 because ctranslate2's aarch64 manylinux wheel is
+# CPU-only — cublas would not enable GPU there, and arches with no wheel
+# (ppc64le, Windows ARM) would fail `uv pip install -r`, regressing a working
+# CPU-only setup.
+# nvidia-cuda-nvrtc-cu12 is a declared dependency of this wheel, unused by ct2
+# at runtime; left floating on purpose (exists on every target above).
+nvidia-cublas-cu12==12.9.2.10; sys_platform == 'win32' or (sys_platform == 'linux' and platform_machine == 'x86_64')
