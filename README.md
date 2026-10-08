@@ -18,8 +18,6 @@ nothing to `pip install` by hand and no Administrator/root access required.
   Online Access**)
 - NVIDIA GPU + driver optional — falls back to CPU automatically
 
-No system `ffmpeg` is required (audio is decoded with the bundled PyAV).
-
 ---
 
 ## Installation
