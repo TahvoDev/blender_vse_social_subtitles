@@ -617,8 +617,6 @@ def setup(progress=None):
           "--python", str(venv_python()),
           "-r", str(REQUIREMENTS)], env, on_line=_line)
 
-    _sentinel_path().write_text(json.dumps(_fingerprint()))
-
     p(0.95, "Verifying installation…")
     ok, detail = _probe()
     if not ok:
@@ -628,5 +626,10 @@ def setup(progress=None):
             f"venv: {venv_python()}\n"
             f"{detail[:800]}"
         )
+
+    # Only mark the venv usable once the import check has passed. Otherwise a
+    # half-installed venv would satisfy quick_ready() and never be retried.
+    _sentinel_path().write_text(json.dumps(_fingerprint()))
+
     p(1.0, "Setup done, but the GPU library check failed – see console."
         if detail.startswith("WARNING:") else "Dependencies ready.")

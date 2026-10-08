@@ -316,7 +316,8 @@ def _setup_timer():
     if changed:
         _redraw_all()
 
-    return 0.25
+    # Unregister as soon as setup ends so a later re-run can register again.
+    return 0.25 if _setup.running else None
 
 
 def _finish_pending(ok):
@@ -437,7 +438,7 @@ def _launch_worker(args_path, result_path, device="cpu"):
     env = bootstrap.worker_env(device)
     try:
         if not bootstrap.online_access():
-            env.setdefault("HF_HUB_OFFLINE", "1")
+            env["HF_HUB_OFFLINE"] = "1"
     except Exception:
         pass
 
@@ -536,7 +537,7 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
         # Expanded buttons, matching the Cycles add-on's compute-device selector.
         layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
-            layout.label(text="Needs the NVIDIA driver – cuBLAS ships with the add-on.", icon="INFO")
+            layout.label(text="Needs the NVIDIA driver – cuBLAS is installed by setup.", icon="INFO")
         layout.separator()
         layout.operator("as.purge_data", icon="TRASH")
 
@@ -630,7 +631,10 @@ class AS_OT_Transcribe(bpy.types.Operator):
             _job.cleanup(args_path, res_path)
             return {"CANCELLED"}
 
-        _begin_setup((args_path, res_path, device))
+        if not _begin_setup((args_path, res_path, device)):
+            _job.cleanup(args_path, res_path)
+            self.report({"WARNING"}, "Already running – see the N-panel")
+            return {"CANCELLED"}
         self.report({"INFO"},
                     "First run: downloading the speech engine (~3.2 GB), then transcribing…")
         return {"FINISHED"}
@@ -653,12 +657,22 @@ def _terminate_proc(proc):
 class AS_OT_Cancel(bpy.types.Operator):
     bl_idname      = "as.cancel"
     bl_label       = "Cancel"
-    bl_description = "Cancel the running transcription"
+    bl_description = "Cancel the running setup or transcription"
 
     def execute(self, ctx):
-        global _job
+        global _job, _pending_run
+        if _setup.running:
+            _setup.running = False
+            _setup.status  = "Cancelled"
+            pending, _pending_run = _pending_run, None
+            if pending:
+                _job.cleanup(pending[0], pending[1])
+            bootstrap.terminate_active()
+            self.report({"INFO"}, "Setup cancelled")
+            return {"FINISHED"}
+
         if not _job.running:
-            self.report({"WARNING"}, "No transcription running")
+            self.report({"WARNING"}, "Nothing running")
             return {"CANCELLED"}
 
         _job.running = False
@@ -721,6 +735,7 @@ class AS_PT_Panel(bpy.types.Panel):
             box = layout.box()
             box.label(text="Setting up speech engine…", icon="TIME")
             box.label(text=f"{int(_setup.progress * 100)}%  {_setup.status}")
+            box.operator("as.cancel", icon="CANCEL")
             return
 
         if _setup.error:
@@ -771,8 +786,8 @@ class AS_PT_Panel(bpy.types.Panel):
         # --- First-run note + primary action -----------------------------
         if not ready:
             note = layout.column(align=True)
-            note.label(text="First run downloads the speech engine (~3.2 GB)", icon="INFO")
-            note.label(text="and models, so it may take a few minutes.")
+            note.label(text="Setup downloads the speech engine (~3.2 GB) and models;", icon="INFO")
+            note.label(text="the first run may take a few minutes.")
 
         n_clips = len(_collect_selected_clips(scene))
 
@@ -805,9 +820,14 @@ def register():
 
 
 def unregister():
-    global _job, _setup
+    global _job, _setup, _pending_run
     _job.running   = False
     _setup.running = False
+    # Drop any run waiting on a first-run setup so its temp files don't leak
+    # into a later enable.
+    pending, _pending_run = _pending_run, None
+    if pending:
+        _job.cleanup(pending[0], pending[1])
     # Kill subprocesses first: Blender deletes our user-data dir right after
     # this, and locked files (Windows) would make that delete fail.
     _terminate_proc(_job.proc)
