@@ -60,9 +60,17 @@ jobs:
           if missing:
               raise SystemExit(f"missing package files: {missing}")
           out = os.environ["ZIP"]
-          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+          # Fixed entry timestamps/permissions so the same sources always
+          # produce byte-identical archives (a re-run is a no-op).
+          fixed = (1980, 1, 1, 0, 0, 0)
+          with zipfile.ZipFile(out, "w") as z:
               for f in files:
-                  z.write(f, f)
+                  info = zipfile.ZipInfo(f, date_time=fixed)
+                  info.compress_type = zipfile.ZIP_DEFLATED
+                  info.create_system = 3
+                  info.external_attr = 0o644 << 16
+                  with open(f, "rb") as src:
+                      z.writestr(info, src.read())
           data = open(out, "rb").read()
           with open(os.environ["GITHUB_OUTPUT"], "a") as o:
               o.write(f"size={len(data)}\n")
