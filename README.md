@@ -22,6 +22,26 @@ nothing to `pip install` by hand and no Administrator/root access required.
 
 ## Installation
 
+### From the extension repository (recommended — supports updates)
+
+This repository ships a static Blender extensions index (`repo/index.json`), so
+you can add it once and then install and update Auto-Subtitles from Blender.
+
+1. **Edit → Preferences → Get Extensions → Repositories → `+` → Add Remote Repository**.
+2. Set **URL** to:
+   ```
+   https://raw.githubusercontent.com/TahvoDev/blender_vse_social_subtitles/main/repo/index.json
+   ```
+3. Give it a name (e.g. `TahvoDev`). This repository is **private**, so paste a
+   GitHub token with read access into **Access Token** (Blender sends it as the
+   request's `Authorization` header).
+4. Add the repository, then find **Auto-Subtitles** in the list and click
+   **Install**.
+
+Blender then offers updates here as new releases are published.
+
+### From a release zip
+
 1. Download the latest `auto_subtitles-<version>.zip` from the
    [**Releases**](https://github.com/TahvoDev/blender_vse_social_subtitles/releases/latest)
    page.
