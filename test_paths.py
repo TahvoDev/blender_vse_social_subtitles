@@ -29,6 +29,28 @@ except ImportError:
 _orig_platform = sys.platform
 sys.platform = "linux"
 
+
+def _assert_temp_calls_are_scoped():
+    """Every runtime tempfile.mkstemp/mkdtemp must be scoped with dir=<...>.
+
+    Guards the whole point of this change: no runtime scratch may land in the
+    shared system temp again.
+    """
+    import ast
+    for name in ("bootstrap.py", "__init__.py", "transcribe_worker.py",
+                 "align_wav2vec2.py"):
+        tree = ast.parse((Path(__file__).parent / name).read_text(encoding="utf-8"),
+                         filename=name)
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("mkstemp", "mkdtemp")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "tempfile"):
+                assert any(k.arg == "dir" for k in node.keywords), \
+                    f"{name}:{node.lineno} tempfile.{node.func.attr} without dir="
+
+
 tmp = Path(tempfile.mkdtemp(prefix="as_paths_"))
 os.environ["XDG_DATA_HOME"] = str(tmp / "data")
 os.environ["XDG_CACHE_HOME"] = str(tmp / "cache")
@@ -89,9 +111,11 @@ try:
         assert key not in env, f"inherited {key} must be stripped"
 
     # 5. purge_data removes everything the add-on owns, nothing else.
+    scratch = bootstrap.tmp_dir() / "blender_job.json"
+    assert scratch.exists(), "job scratch must still exist before purge"
     assert bootstrap.purge_data() is True
     assert not data.exists(), "user-data dir must be removed"
-    assert not (data / "tmp" / "blender_job.json").exists(), "job scratch must be gone"
+    assert not scratch.exists(), "job scratch must be gone"
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
@@ -159,6 +183,9 @@ try:
     finally:
         sys.platform = _saved_platform
         os.environ.pop("LOCALAPPDATA", None)
+
+    # 11. No runtime tempfile call is left unscoped (would escape the data dir).
+    _assert_temp_calls_are_scoped()
 
     print("test_paths: OK")
 finally:
