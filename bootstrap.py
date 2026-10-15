@@ -7,6 +7,11 @@ installs the pinned runtime dependencies into it using `uv`
 with that venv's interpreter, so heavy ML libraries never load inside
 Blender's process.
 
+Every file the add-on writes lives under the extension's per-user data dir
+(``bpy.utils.extension_path_user``): the venv, uv, the uv wheel cache, the
+speech models and the transient job scratch dir. Nothing is written into the
+add-on folder (Blender replaces it on update) or the shared system temp.
+
 All network access is gated on Blender's "Allow Online Access" preference
 (bpy.app.online_access).
 """
@@ -111,6 +116,18 @@ def data_dir() -> Path:
 def hf_dir() -> Path:
     """Where the worker downloads speech models (HF_HOME); wiped on uninstall."""
     return data_dir() / "hf"
+
+
+def tmp_dir() -> Path:
+    """
+    Scratch dir for transient job files (uv scratch, args/result JSON).
+
+    Kept inside the user-data dir so no add-on file ever lands in the shared
+    system temp: uninstall and purge_data() clean it up with everything else.
+    """
+    p = data_dir() / "tmp"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def pin_model_caches(env: dict) -> dict:
@@ -450,7 +467,7 @@ def ensure_uv(progress=None) -> str:
     if progress:
         progress(0.03, f"Downloading uv {UV_VERSION}…")
 
-    tmpdir = Path(tempfile.mkdtemp(prefix="as_uv_"))
+    tmpdir = Path(tempfile.mkdtemp(prefix="as_uv_", dir=tmp_dir()))
     try:
         tarpath = tmpdir / fname
         _download(url, tarpath, progress, 0.03, 0.20)

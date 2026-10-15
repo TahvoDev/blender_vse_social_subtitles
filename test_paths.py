@@ -5,7 +5,8 @@ Verifies (without Blender) that:
   * migrate_legacy_cache() moves the pre-1.3 uv cache into the extension
     user-data dir and removes the legacy dir,
   * neither it nor purge_data() ever touches the shared HuggingFace cache,
-  * purge_data() removes everything the add-on downloaded.
+  * every runtime path (venv, models, uv, job scratch) is under the
+    user-data dir, and purge_data() removes everything the add-on downloaded.
 
 Run: python3 test_paths.py
 """
@@ -68,6 +69,12 @@ try:
     assert bootstrap.hf_dir() == data / "hf"
     assert bootstrap._uv_path() == data / "bin" / "uv"
 
+    # 3b. Transient job scratch also lives in the user-data dir (never the
+    #     shared system temp), and is created on demand.
+    assert bootstrap.tmp_dir() == data / "tmp"
+    assert bootstrap.tmp_dir().is_dir()
+    (bootstrap.tmp_dir() / "blender_job.json").write_text("scratch")
+
     # 4. Model-cache pinning: HF caches land under the user-data dir even when
     #    the surrounding environment tries to override them.
     pinned = {"HF_HOME": "/elsewhere", "HF_HUB_CACHE": "/elsewhere/hub",
@@ -84,6 +91,7 @@ try:
     # 5. purge_data removes everything the add-on owns, nothing else.
     assert bootstrap.purge_data() is True
     assert not data.exists(), "user-data dir must be removed"
+    assert not (data / "tmp" / "blender_job.json").exists(), "job scratch must be gone"
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
