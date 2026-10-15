@@ -98,18 +98,32 @@ def test_word_preservation_and_monotonic_frames():
 
 def test_terminal_and_clause_guards():
     tw = _load("transcribe_worker")
-    assert tw._is_terminal("Hello!")
-    assert tw._is_terminal("Done.")
-    assert tw._is_terminal("结束。")
-    assert not tw._is_terminal("3.5")        # decimal, ends in a digit anyway
-    assert not tw._is_terminal("Dr.")        # abbreviation
-    assert not tw._is_terminal("U.S.")       # dotted initials
-    assert tw._is_terminal("No.")            # "no" is a word, not an abbreviation
-    assert not tw._is_terminal("wait...")    # ellipsis is a clause, not terminal
-    assert not tw._is_terminal("word")
+    assert tw._is_terminal("Hello!", "en")
+    assert tw._is_terminal("Done.", "en")
+    assert tw._is_terminal("结束。", "zh")
+    assert not tw._is_terminal("3.5", "en")       # decimal, ends in a digit anyway
+    assert not tw._is_terminal("Dr.", "en")       # abbreviation
+    assert not tw._is_terminal("U.S.", "en")      # dotted initials
+    assert tw._is_terminal("No.", "en")           # "no" is a word, not an abbreviation
+    assert not tw._is_terminal("wait...", "en")   # ellipsis is a clause, not terminal
+    assert not tw._is_terminal("word", "en")
     assert tw._is_clause("well,")
     assert tw._is_clause("wait…")
     assert not tw._is_clause("word")
+
+
+def test_language_rules_are_data_driven():
+    # English rules come from caption_rules/en.json; a language with no file
+    # has every word rule disabled (no English fallback).
+    tw = _load("transcribe_worker")
+    assert tw._is_function_word("the", "en")
+    assert tw._is_continuation_word("and", "en")
+    assert not tw._is_function_word("de", "es")   # no es.json yet
+    assert not tw._is_continuation_word("y", "es")
+    assert tw._is_terminal("Dr.", "es")          # no abbreviations for es -> no guard
+    assert not tw._is_terminal("Dr.", "en")       # en abbreviation guard applies
+    assert tw._load_rules("en")["function_words"]
+    assert tw._load_rules("zz")["function_words"] == set()
 
 
 def _ctx(tw, **kw):
@@ -138,7 +152,7 @@ def test_function_word_seam_rebalanced():
     assert len(out) == 2, out
     # no caption dangles on a function word
     for b in out[:-1]:
-        assert tw._token(b[-1]["word"]) not in tw._FUNCTION_WORDS["en"], b
+        assert tw._token(b[-1]["word"]) not in tw._load_rules("en")["function_words"], b
     got = [w["word"] for b in out for w in b]
     assert got == [w["word"] for b in blocks for w in b], got
     # no progress is possible on a second sweep -> idempotent
@@ -189,10 +203,10 @@ def test_duplicate_flagging():
     dup = [{"word": "the", "start": 0.0, "end": 0.2},
            {"word": "the", "start": 0.2, "end": 0.4},
            {"word": "cat", "start": 0.4, "end": 0.7}]
-    assert tw._has_duplicate(dup)
+    assert tw._has_duplicate(dup, "en")
     allowed = [{"word": "that", "start": 0.0, "end": 0.2},
                {"word": "that", "start": 0.2, "end": 0.4}]
-    assert not tw._has_duplicate(allowed)
+    assert not tw._has_duplicate(allowed, "en")
 
 
 def test_forced_alignment_trellis():

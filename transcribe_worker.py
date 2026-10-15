@@ -48,53 +48,50 @@ except Exception as e:
 def _remove_punctuation(text):
     return text.translate(str.maketrans("", "", string.punctuation))
 
-DEFAULT_MIN_CHARS = 12
-DEFAULT_MIN_DUR = 0.8
-DEFAULT_MERGE_GAP_MAX = 0.45
-DEFAULT_MAX_DUR = 6.0
-DEFAULT_MAX_CPS = 17.0
-_PASS_CAP = 4
-_PUNCT_DENSITY_MIN = 0.02
+_RULES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "caption_rules")
 
-_CJK_LANGS = {"zh", "ja", "ko"}
 
-# Function words (articles, prepositions, conjunctions, auxiliaries, possessive
-# determiners) whose presence at a caption edge reads as a broken phrase.
-# "Absent language = rule disabled" — never falls back to English, so e.g.
-# Spanish "de/la/que" are not judged by English rules.
-_FUNCTION_WORDS = {
-    "en": {
-        "the", "a", "an", "and", "or", "but", "nor", "so", "yet", "for",
-        "of", "to", "in", "on", "at", "by", "with", "from", "into", "onto",
-        "upon", "over", "under", "above", "below", "between", "among",
-        "through", "during", "before", "after", "against", "about", "as",
-        "than", "that", "which", "who", "whom", "whose", "if", "then",
-        "because", "while", "when", "where", "whether", "is", "are", "was",
-        "were", "be", "been", "being", "am", "do", "does", "did", "has",
-        "have", "had", "will", "would", "shall", "should", "can", "could",
-        "may", "might", "must", "not", "no", "its", "his", "her", "their",
-        "our", "your", "my", "him", "them", "us", "me", "this", "these",
-        "those", "there", "here",
-    },
-}
+def _read_rules_file(name):
+    try:
+        with open(os.path.join(_RULES_DIR, name), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
 
-# Words that, starting a caption, imply the previous sentence carries on.
-_CONTINUATION_WORDS = {
-    "en": {
-        "and", "but", "or", "so", "then", "because", "which", "that", "who",
-        "whom", "whose", "if", "when", "while", "where", "as", "nor", "yet",
-        "though", "although", "unless", "until", "since",
-    },
-}
 
-_ABBREV = {
-    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",
-    "i.e", "fig", "al", "inc", "ltd", "co", "corp", "dept", "est",
-    "approx", "min", "max", "u.s", "u.k", "a.m", "p.m", "cf", "vol",
-}
+# Tunables live in caption_rules/defaults.json so they are not buried in code.
+_DEFAULTS = _read_rules_file("defaults.json")
 
-_DUP_ALLOW = {"that that", "had had", "no no", "very very",
-              "really really", "ha ha", "bye bye", "yes yes"}
+DEFAULT_MIN_CHARS = _DEFAULTS.get("min_chars", 12)
+DEFAULT_MIN_DUR = _DEFAULTS.get("min_dur", 0.8)
+DEFAULT_MERGE_GAP_MAX = _DEFAULTS.get("merge_gap_max", 0.45)
+DEFAULT_MAX_DUR = _DEFAULTS.get("max_dur", 6.0)
+DEFAULT_MAX_CPS = _DEFAULTS.get("max_cps", 17.0)
+_PASS_CAP = _DEFAULTS.get("pass_cap", 4)
+_PUNCT_DENSITY_MIN = _DEFAULTS.get("punct_density_min", 0.02)
+_CJK_LANGS = set(_DEFAULTS.get("cjk_langs", ["zh", "ja", "ko"]))
+
+_RULES_CACHE = {}
+
+
+def _load_rules(lang):
+    """Per-language word tables from caption_rules/<lang>.json.
+
+    function_words (articles/prepositions/conjunctions/auxiliaries/possessive
+    determiners) read as broken at a caption edge; continuation_words imply the
+    previous sentence carries on; abbreviations/dup_allow refine the terminal
+    and duplicate checks. A missing file means that language has NO rules —
+    every word-based rule is disabled for it (never an English fallback).
+    """
+    if lang not in _RULES_CACHE:
+        raw = _read_rules_file(f"{lang}.json")
+        _RULES_CACHE[lang] = {
+            k: set(raw.get(k, ()))
+            for k in ("function_words", "continuation_words",
+                      "abbreviations", "dup_allow")
+        }
+    return _RULES_CACHE[lang]
+
 
 
 class _Ctx:
@@ -111,7 +108,7 @@ def _is_ellipsis(t):
     return t.endswith("…") or t.endswith("...")
 
 
-def _is_terminal(word):
+def _is_terminal(word, lang):
     t = word.strip().rstrip("\"')]}”’»》」』")
     if not t or _is_ellipsis(t):
         return False
@@ -121,7 +118,7 @@ def _is_terminal(word):
     if ch in ".!?":
         if ch == ".":
             core = t[:-1].lower()
-            if core in _ABBREV or (len(core) == 1 and core.isalpha()):
+            if core in _load_rules(lang)["abbreviations"] or (len(core) == 1 and core.isalpha()):
                 return False
             if re.fullmatch(r"([a-z]\.)+[a-z]", core):
                 return False
@@ -145,8 +142,8 @@ def _token(word):
     return word.strip().strip(string.punctuation).lower()
 
 
-def _in_set(word, table, lang):
-    s = table.get(lang)
+def _in_set(word, category, lang):
+    s = _load_rules(lang)[category]
     if not s:
         return False
     if "'" in word or "’" in word:
@@ -156,17 +153,17 @@ def _in_set(word, table, lang):
 
 
 def _is_function_word(word, lang):
-    return _in_set(word, _FUNCTION_WORDS, lang)
+    return _in_set(word, "function_words", lang)
 
 
 def _is_continuation_word(word, lang):
-    return _in_set(word, _CONTINUATION_WORDS, lang)
+    return _in_set(word, "continuation_words", lang)
 
 
-def _punct_density(words):
+def _punct_density(words, lang):
     if not words:
         return 0.0
-    n = sum(1 for w in words if _is_terminal(w["word"]) or _is_clause(w["word"]))
+    n = sum(1 for w in words if _is_terminal(w["word"], lang) or _is_clause(w["word"]))
     return n / len(words)
 
 
@@ -271,7 +268,7 @@ def _boundary_badness(prev, next_, ctx):
     if next_[0]["start"] - prev[-1]["end"] > ctx.merge_gap_max:
         return 0
     bad = 0
-    if ctx.use_punct and not _is_terminal(prev[-1]["word"]):
+    if ctx.use_punct and not _is_terminal(prev[-1]["word"], ctx.lang):
         bad += 1
     if _is_function_word(prev[-1]["word"], ctx.lang):
         bad += 1
@@ -312,7 +309,7 @@ def _split_words(words, ctx):
     best = None
     for k in range(1, len(words)):
         score = abs(k - (len(words) - k))
-        if ctx.use_punct and _is_terminal(words[k - 1]["word"]):
+        if ctx.use_punct and _is_terminal(words[k - 1]["word"], ctx.lang):
             score -= 5
         elif ctx.use_punct and _is_clause(words[k - 1]["word"]):
             score -= 2
@@ -403,15 +400,16 @@ def _small_pass(blocks, ctx):
     return blocks
 
 
-def _has_duplicate(words):
+def _has_duplicate(words, lang):
     """W4: exact duplicate tokens within a tiny gap, honouring an allowlist of
-    genuine repetitions ("had had", "no no no")."""
+    genuine repetitions ("had had", "no no")."""
+    allow = _load_rules(lang)["dup_allow"]
     for a, b in zip(words, words[1:]):
         if b["start"] - a["end"] > 0.2:
             continue
         ka = a["word"].strip(string.punctuation).lower()
         kb = b["word"].strip(string.punctuation).lower()
-        if ka and ka == kb and f"{ka} {kb}" not in _DUP_ALLOW:
+        if ka and ka == kb and f"{ka} {kb}" not in allow:
             return True
     return False
 
@@ -472,7 +470,7 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         max_dur=max_dur, max_cps=max_cps,
         min_chars=min_chars, min_dur=min_dur, merge_gap_max=merge_gap_max,
         use_punct=(base_lang not in _CJK_LANGS
-                   and _punct_density(words) >= _PUNCT_DENSITY_MIN),
+                   and _punct_density(words, base_lang) >= _PUNCT_DENSITY_MIN),
     )
 
     max_total = max_chars * max_lines
@@ -507,7 +505,7 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         flags = []
         if any(len(ln) > max_chars for ln in lines):
             flags.append("W1")
-        if _has_duplicate(bl):
+        if _has_duplicate(bl, ctx.lang):
             flags.append("W4")
         if _is_small(bl, ctx):
             flags.append("F1")

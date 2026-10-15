@@ -1,0 +1,10 @@
+{
+  "min_chars": 12,
+  "min_dur": 0.8,
+  "merge_gap_max": 0.45,
+  "max_dur": 6.0,
+  "max_cps": 17.0,
+  "pass_cap": 4,
+  "punct_density_min": 0.02,
+  "cjk_langs": ["zh", "ja", "ko"]
+}
