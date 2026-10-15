@@ -30,7 +30,6 @@ import subprocess
 import urllib.request
 from pathlib import Path
 
-# Pinned uv release + verified sha256 of each archive.
 UV_VERSION = "0.12.23"
 _UV_ASSETS = {
     ("Linux", "x86_64"): (
@@ -63,10 +62,6 @@ ADDON_DIR   = Path(__file__).parent
 REQUIREMENTS = ADDON_DIR / "requirements.in"
 
 
-# ---------------------------------------------------------------------------
-# Environment / paths
-# ---------------------------------------------------------------------------
-
 def clean_env() -> dict:
     """
     A sanitized environment for the venv interpreter.
@@ -83,7 +78,6 @@ def clean_env() -> dict:
 
 
 def online_access() -> bool:
-    """Honour Blender's 'Allow Online Access' preference."""
     try:
         import bpy
         return bool(getattr(bpy.app, "online_access", True))
@@ -114,7 +108,6 @@ def data_dir() -> Path:
 
 
 def hf_dir() -> Path:
-    """Where the worker downloads speech models (HF_HOME); wiped on uninstall."""
     return data_dir() / "hf"
 
 
@@ -149,7 +142,6 @@ def pin_model_caches(env: dict) -> dict:
 
 
 def legacy_cache_dir() -> Path:
-    """Pre-1.3 location of the uv binary + wheel cache (migrated, then removed)."""
     if sys.platform == "win32":
         base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
     elif sys.platform == "darwin":
@@ -189,7 +181,6 @@ def migrate_legacy_cache():
 
 
 def purge_data() -> bool:
-    """Remove everything this add-on downloaded. True when nothing is left."""
     target = data_dir()
     legacy = legacy_cache_dir()
     shutil.rmtree(target, ignore_errors=True)
@@ -206,10 +197,6 @@ def venv_python() -> Path:
         return venv_dir() / "Scripts" / "python.exe"
     return venv_dir() / "bin" / "python"
 
-
-# ---------------------------------------------------------------------------
-# Worker environment (CUDA library discovery)
-# ---------------------------------------------------------------------------
 
 def find_cuda_lib_dirs() -> list:
     """
@@ -285,10 +272,6 @@ def _sentinel_path() -> Path:
     return venv_dir() / ".auto_subtitles.json"
 
 
-# ---------------------------------------------------------------------------
-# Hashing
-# ---------------------------------------------------------------------------
-
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -305,12 +288,7 @@ def _fingerprint() -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
-# Readiness
-# ---------------------------------------------------------------------------
-
 def quick_ready() -> bool:
-    """Cheap check: venv exists and matches the current Blender interpreter."""
     if not venv_python().exists():
         return False
     try:
@@ -402,16 +380,11 @@ def _probe(timeout: int = 300):
 
 
 def probe_ready(timeout: int = 300) -> bool:
-    """Full check: quick_ready() plus a real import of the key packages."""
     if not quick_ready():
         return False
     ok, _ = _probe(timeout=timeout)
     return ok
 
-
-# ---------------------------------------------------------------------------
-# uv
-# ---------------------------------------------------------------------------
 
 def _uv_path() -> Path:
     return data_dir() / "bin" / ("uv.exe" if sys.platform == "win32" else "uv")
@@ -435,7 +408,6 @@ def _download(url: str, dest: Path, progress=None, lo: float = 0.0, hi: float = 
 
 
 def ensure_uv(progress=None) -> str:
-    """Return a usable uv executable, downloading a pinned build if needed."""
     found = shutil.which("uv")
     if found:
         return found
@@ -510,15 +482,10 @@ def ensure_uv(progress=None) -> str:
     return str(target)
 
 
-# ---------------------------------------------------------------------------
-# Setup
-# ---------------------------------------------------------------------------
-
 _active_proc = None
 
 
 def _run_tracked(cmd, timeout=30):
-    """Run a short-lived child, tracked so terminate_active() can kill it."""
     global _active_proc
     proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     _active_proc = proc
@@ -534,7 +501,6 @@ def _run_tracked(cmd, timeout=30):
 
 
 def terminate_active():
-    """Kill a running setup subprocess (before purge/uninstall)."""
     proc = _active_proc
     if proc is None or proc.poll() is not None:
         return
@@ -573,7 +539,6 @@ def _run(cmd, env, on_line=None):
 
 
 def setup(progress=None):
-    """(Re)create the venv and install the pinned dependencies."""
     def p(v, t):
         if progress:
             progress(v, t)

@@ -23,12 +23,7 @@ except ImportError:  # direct execution / legacy layout
     import bootstrap
 
 
-# ---------------------------------------------------------------------------
-# VSE helpers
-# ---------------------------------------------------------------------------
-
 def _get_strips_all(scene):
-    """Return the strip collection regardless of Blender API version."""
     se = scene.sequence_editor
     if se is None:
         return []
@@ -40,7 +35,6 @@ def _get_strips_all(scene):
 
 
 def _resolve_audio_path(strip):
-    """Return absolute audio path for SOUND or MOVIE strips, or None."""
     if strip.type == "SOUND":
         raw = getattr(strip.sound, "filepath", None)
         if raw:
@@ -53,16 +47,6 @@ def _resolve_audio_path(strip):
 
 
 def _collect_selected_clips(scene):
-    """
-    Scan strips_all for selected SOUND/MOVIE strips.
-    Prefer SOUND strips; only fall back to MOVIE if no paired SOUND exists.
-
-    For each clip we capture:
-      frame_start     – absolute VSE frame where the visible clip begins
-      frame_end       – absolute VSE frame where the visible clip ends
-      trim_start_s    – seconds into the source file where the clip starts
-      trim_duration_s – duration of the visible segment in seconds
-    """
     fps = scene.render.fps / scene.render.fps_base
     strips = _get_strips_all(scene)
     sound_paths = set()
@@ -114,10 +98,6 @@ def _redraw_all():
                     region.tag_redraw()
 
 
-# ---------------------------------------------------------------------------
-# Global job state
-# ---------------------------------------------------------------------------
-
 class _JobState:
     __slots__ = ("running", "progress", "status", "error",
                  "result_path", "args_path", "proc", "queue")
@@ -133,7 +113,6 @@ class _JobState:
         self.queue       = queue.Queue()
 
     def cleanup(self, *paths):
-        """Remove temp files (default: args/result). Safe to call repeatedly."""
         for path in (paths or (self.args_path, self.result_path)):
             try:
                 if path and os.path.exists(path):
@@ -156,9 +135,7 @@ class _SetupState:
 _job   = _JobState()
 _setup = _SetupState()
 
-# Worker params (args_path, result_path, device) to launch automatically once a
-# first-run dependency download finishes.
-_pending_run = None
+_pending_run_args = None
 
 
 # ---------------------------------------------------------------------------
@@ -248,14 +225,10 @@ def _unregister_props():
                 pass
 
 
-# ---------------------------------------------------------------------------
-# Timer – drains worker queue, updates UI
-# ---------------------------------------------------------------------------
-
 def _timer_callback():
     global _job
     if not _job.running:
-        return None  # unregister timer
+        return None
 
     changed = False
     while True:
@@ -289,7 +262,7 @@ def _timer_callback():
 def _setup_timer():
     global _setup
     if not _setup.running:
-        return None  # unregister timer
+        return None
 
     changed = False
     while True:
@@ -321,9 +294,8 @@ def _setup_timer():
 
 
 def _finish_pending(ok):
-    """Launch the waiting transcription after a first-run setup, or clean up."""
-    global _pending_run
-    pending, _pending_run = _pending_run, None
+    global _pending_run_args
+    pending, _pending_run_args = _pending_run_args, None
     if not pending:
         return
     args_path, res_path, device = pending
@@ -332,10 +304,6 @@ def _finish_pending(ok):
     else:
         _job.cleanup(args_path, res_path)
 
-
-# ---------------------------------------------------------------------------
-# Strip creation
-# ---------------------------------------------------------------------------
 
 def _apply_case(text, case):
     if case == "upper": return text.upper()
@@ -408,12 +376,7 @@ def _create_strips_from_result(result_path):
     print("[Auto-Subtitles] Strips created successfully.")
 
 
-# ---------------------------------------------------------------------------
-# Worker launcher
-# ---------------------------------------------------------------------------
-
 def _start_worker(args_path, result_path, device="cpu"):
-    """Begin a transcription run (worker subprocess + UI timer)."""
     global _job
     _job.queue       = queue.Queue()  # drop stale messages from a prior run
     _job.running     = True
@@ -505,10 +468,6 @@ def _launch_worker(args_path, result_path, device="cpu"):
     threading.Thread(target=_run, daemon=True).start()
 
 
-# ---------------------------------------------------------------------------
-# Add-on preferences
-# ---------------------------------------------------------------------------
-
 def _addon_key():
     return __package__ or __name__
 
@@ -534,7 +493,6 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
-        # Expanded buttons, matching the Cycles add-on's compute-device selector.
         layout.row().prop(self, "device", expand=True)
         if self.device == "cuda":
             layout.label(text="Needs the NVIDIA driver – cuBLAS is installed by setup.", icon="INFO")
@@ -542,20 +500,11 @@ class AS_AddonPreferences(bpy.types.AddonPreferences):
         layout.operator("as.purge_data", icon="TRASH")
 
 
-# ---------------------------------------------------------------------------
-# Operators
-# ---------------------------------------------------------------------------
-
 def _begin_setup(pending_run=None):
-    """
-    Start the one-time dependency download automatically. When ``pending_run``
-    is given as (args_path, result_path, device) the transcription it belongs
-    to is launched once the download finishes. Returns False if one is running.
-    """
-    global _pending_run
+    global _pending_run_args
     if _setup.running:
         return False
-    _pending_run    = pending_run
+    _pending_run_args = pending_run
     _setup.queue    = queue.Queue()
     _setup.running  = True
     _setup.progress = 0.0
@@ -605,7 +554,7 @@ class AS_OT_Transcribe(bpy.types.Operator):
             "device":      device,
             "max_chars":   scene.as_max_chars,
             "max_lines":   scene.as_max_lines,
-            "max_gap_s":   scene.as_max_gap_fr / fps,  # convert frames → seconds for worker
+            "max_gap_s":   scene.as_max_gap_fr / fps,
             "rm_punct":    scene.as_rm_punct,
             "fps":         fps,
         }
@@ -626,7 +575,6 @@ class AS_OT_Transcribe(bpy.types.Operator):
                         f"Transcribing {len(clips)} clip(s) – see N-panel for progress")
             return {"FINISHED"}
 
-        # First run: download the runtime automatically, then transcribe.
         if not bootstrap.online_access():
             self.report({"ERROR"},
                         "Enable online access: Preferences > Get Extensions")
@@ -662,11 +610,11 @@ class AS_OT_Cancel(bpy.types.Operator):
     bl_description = "Cancel the running setup or transcription"
 
     def execute(self, ctx):
-        global _job, _pending_run
+        global _job, _pending_run_args
         if _setup.running:
             _setup.running = False
             _setup.status  = "Cancelled"
-            pending, _pending_run = _pending_run, None
+            pending, _pending_run_args = _pending_run_args, None
             if pending:
                 _job.cleanup(pending[0], pending[1])
             bootstrap.terminate_active()
@@ -711,10 +659,6 @@ class AS_OT_PurgeData(bpy.types.Operator):
         return {"FINISHED"}
 
 
-# ---------------------------------------------------------------------------
-# Panel
-# ---------------------------------------------------------------------------
-
 class AS_PT_Panel(bpy.types.Panel):
     bl_label       = "Auto-Subtitles"
     bl_idname      = "AS_PT_Panel"
@@ -732,7 +676,6 @@ class AS_PT_Panel(bpy.types.Panel):
         except Exception:
             ready = False
 
-        # --- First-run download status -----------------------------------
         if _setup.running:
             box = layout.box()
             box.label(text="Setting up speech engine…", icon="TIME")
@@ -745,7 +688,6 @@ class AS_PT_Panel(bpy.types.Panel):
             box.label(text="Setup failed – click Generate to retry", icon="ERROR")
             box.label(text=_setup.error[:70])
 
-        # --- Transcription status ---------------------------------------
         if _job.running:
             box = layout.box()
             box.label(text="Running…", icon="TIME")
@@ -759,7 +701,6 @@ class AS_PT_Panel(bpy.types.Panel):
         if _job.status == "Done!":
             layout.box().label(text="Subtitles created", icon="CHECKMARK")
 
-        # --- Transcription ----------------------------------------------
         col = layout.column(align=True)
         col.label(text="Transcription", icon="SPEAKER")
         col.prop(scene, "as_model")
@@ -767,7 +708,6 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        # --- Output ------------------------------------------------------
         col = layout.column(align=True)
         col.label(text="Output", icon="TEXT")
         col.prop(scene, "as_channel")
@@ -777,7 +717,6 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        # --- Formatting --------------------------------------------------
         col = layout.column(align=True)
         col.label(text="Formatting", icon="FONT_DATA")
         col.prop(scene, "as_text_case")
@@ -785,7 +724,6 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.separator()
 
-        # --- First-run note + primary action -----------------------------
         if not ready:
             note = layout.column(align=True)
             note.label(text="Setup downloads the speech engine (~3.2 GB) and models.", icon="INFO")
@@ -799,10 +737,6 @@ class AS_PT_Panel(bpy.types.Panel):
 
         layout.label(text=f"{n_clips} clip(s) selected", icon="INFO")
 
-
-# ---------------------------------------------------------------------------
-# Registration
-# ---------------------------------------------------------------------------
 
 CLASSES = [AS_AddonPreferences, AS_OT_Transcribe, AS_OT_Cancel,
            AS_OT_PurgeData, AS_PT_Panel]
@@ -822,12 +756,12 @@ def register():
 
 
 def unregister():
-    global _job, _setup, _pending_run
+    global _job, _setup, _pending_run_args
     _job.running   = False
     _setup.running = False
     # Drop any run waiting on a first-run setup so its temp files don't leak
     # into a later enable.
-    pending, _pending_run = _pending_run, None
+    pending, _pending_run_args = _pending_run_args, None
     if pending:
         _job.cleanup(pending[0], pending[1])
     # Kill subprocesses first: Blender deletes our user-data dir right after
