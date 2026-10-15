@@ -610,8 +610,10 @@ class AS_OT_Transcribe(bpy.types.Operator):
             "fps":         fps,
         }
 
-        fd_a, args_path = tempfile.mkstemp(suffix="_as_args.json",   prefix="blender_")
-        fd_r, res_path  = tempfile.mkstemp(suffix="_as_result.json", prefix="blender_")
+        fd_a, args_path = tempfile.mkstemp(suffix="_as_args.json",   prefix="blender_",
+                                           dir=bootstrap.tmp_dir())
+        fd_r, res_path  = tempfile.mkstemp(suffix="_as_result.json", prefix="blender_",
+                                           dir=bootstrap.tmp_dir())
         os.close(fd_a)
         os.close(fd_r)
 

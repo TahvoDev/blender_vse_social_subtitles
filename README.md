@@ -69,10 +69,12 @@ Blender process                     worker process (private venv)
 
 - `bootstrap.py` uses [uv](https://github.com/astral-sh/uv) to create a venv
   from Blender's own Python and install the pinned dependencies in
-  `requirements.in`. **Everything the add-on downloads — the venv, uv and its
-  wheel cache, and the whisper/wav2vec2 models — lives in the per-extension
-  user data dir** (`bpy.utils.extension_path_user`), so it never writes into
-  the add-on folder and survives add-on updates.
+  `requirements.in`. **Everything the add-on writes — the venv, uv and its
+  wheel cache, the whisper/wav2vec2 models, and the transient job scratch
+  files — lives in the per-extension user data dir**
+  (`bpy.utils.extension_path_user`), so it never writes into
+  the add-on folder, the shared system temp, or `~/.cache`, and survives
+  add-on updates.
 - The transcription worker runs in that venv as a separate process, so heavy
   ML libraries (torch, ctranslate2, …) never load inside Blender. This avoids
   the native-library/`torch._dynamo` crashes that occur when such packages are
@@ -142,9 +144,10 @@ download is the same size either way.
 ## Uninstall
 
 Removing the extension (**Edit → Preferences → Add-ons → Extensions →
-Remove**) deletes everything it downloaded: Blender automatically removes the
-extension's user data dir, which contains the venv, uv, the wheel cache and
-the speech models. Nothing is written into the add-on folder itself.
+Remove**) deletes everything it wrote: Blender automatically removes the
+extension's user data dir, which contains the venv, uv, the wheel cache, the
+speech models and the job scratch files. Nothing is written into the add-on
+folder itself, the shared system temp, or the shared HuggingFace cache.
 
 To free disk space without removing the extension, use **Remove Downloaded
 Data** in **Edit → Preferences → Add-ons → Auto-Subtitles** (it re-downloads
