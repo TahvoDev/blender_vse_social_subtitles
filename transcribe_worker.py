@@ -22,7 +22,6 @@ _addon_dir = os.path.dirname(os.path.abspath(__file__))
 if _addon_dir not in sys.path:
     sys.path.insert(0, _addon_dir)
 
-# Disable dynamo if torch is already imported.
 try:
     import torch as _t
     if hasattr(_t, "_dynamo"):
@@ -30,9 +29,6 @@ try:
 except Exception:
     pass
 
-# ---------------------------------------------------------------------------
-# Progress / error
-# ---------------------------------------------------------------------------
 
 def progress(value: float, msg: str = ""):
     print(f"PROGRESS:{value:.4f}:{msg}", flush=True)
@@ -41,9 +37,6 @@ def error(msg: str):
     print(f"ERROR:{msg}", flush=True)
     sys.exit(1)
 
-# ---------------------------------------------------------------------------
-# Aligner (installed; graceful fallback if it errors at runtime)
-# ---------------------------------------------------------------------------
 try:
     import align_wav2vec2 as _aligner
     _ALIGN_AVAILABLE = True
@@ -51,9 +44,6 @@ except Exception as e:
     _ALIGN_AVAILABLE = False
     print(f"[worker] Aligner unavailable ({e}) – using faster-whisper timestamps", flush=True)
 
-# ---------------------------------------------------------------------------
-# Text helpers
-# ---------------------------------------------------------------------------
 
 def _remove_punctuation(text):
     return text.translate(str.maketrans("", "", string.punctuation))
@@ -64,9 +54,6 @@ def _apply_case(text, case):
     if case == "title": return text.title()
     return text
 
-# ---------------------------------------------------------------------------
-# Word → subtitle blocks
-# ---------------------------------------------------------------------------
 
 def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
                          fps, trim_start_s,
@@ -104,7 +91,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
 
     max_total = max_chars * max_lines
 
-    # Pass 1 — group by char cap + silence break
     blocks, block = [], []
     for w in words:
         if block:
@@ -117,7 +103,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
     if block:
         blocks.append(block)
 
-    # Pass 2 — raw frame ranges
     subs = []
     for bl in blocks:
         raw = " ".join(w["word"] for w in bl)
@@ -136,7 +121,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
     if not subs:
         return []
 
-    # Pass 3 — gap fill / persistence
     max_gap_fr = int(round(max_gap_s * fps))
     for i, s in enumerate(subs):
         nat = s["frame_end"]
@@ -147,7 +131,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         else:
             s["frame_end"] = nat + max_gap_fr
 
-    # Pass 4 — clamp to clip
     out = []
     for s in subs:
         fs = max(s["frame_start"], clip_frame_start)
@@ -157,9 +140,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         out.append({"text": s["text"], "frame_start": fs, "frame_end": fe})
     return out
 
-# ---------------------------------------------------------------------------
-# Audio decoding
-# ---------------------------------------------------------------------------
 
 def _iter_resampled(container, stream, resampler):
     """Yield 1-D int16 mono arrays from a PyAV container (incl. flush)."""
@@ -226,10 +206,6 @@ def _decode_audio(path, start_s=0.0, duration_s=None, sampling_rate=16000):
     return audio
 
 
-# ---------------------------------------------------------------------------
-# Transcribe one clip
-# ---------------------------------------------------------------------------
-
 def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     audio_path      = clip["audio_path"]
     frame_start     = clip["frame_start"]
@@ -242,8 +218,6 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
     progress(clip_idx / n_clips,
              f"Transcribing clip {clip_idx+1}/{n_clips}: {clip['name']} …")
 
-    # Decode only the clip window to 16kHz mono float32 with PyAV (seeks to the
-    # in-point). Timestamps are relative to t=0 of the clip, so no offset math.
     clip_audio = _decode_audio(audio_path, trim_start_s, trim_duration_s,
                                sampling_rate=16000)
 
@@ -286,7 +260,6 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
         except Exception as e:
             print(f"[worker] alignment failed: {e}", flush=True)
 
-    # Fallback: faster-whisper word timestamps (clip-relative → file-relative)
     if not all_words:
         all_words = []
         for seg in segments:
@@ -312,9 +285,6 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
              f"Clip {clip_idx+1} done – {len(subs)} subtitle block(s)")
     return subs
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 def main():
     if len(sys.argv) < 3:

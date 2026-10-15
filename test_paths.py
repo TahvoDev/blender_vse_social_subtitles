@@ -58,14 +58,13 @@ os.environ["XDG_CACHE_HOME"] = str(tmp / "cache")
 try:
     import bootstrap
 
-    data = bootstrap.data_dir()               # <XDG_DATA_HOME>/auto_subtitles
-    legacy = bootstrap.legacy_cache_dir()     # <XDG_CACHE_HOME>/auto_subtitles
-    hf_shared = tmp / "cache" / "huggingface"  # shared, must never be touched
+    data = bootstrap.data_dir()
+    legacy = bootstrap.legacy_cache_dir()
+    hf_shared = tmp / "cache" / "huggingface"
 
     assert data == tmp / "data" / "auto_subtitles", data
     assert legacy == tmp / "cache" / "auto_subtitles", legacy
 
-    # Fake pre-1.3 legacy cache + shared HF cache + current user data.
     (legacy / "bin").mkdir(parents=True)
     (legacy / "uv-cache" / "wheels").mkdir(parents=True)
     (legacy / "bin" / "uv").write_text("fake-uv")
@@ -75,7 +74,6 @@ try:
     (data / "venv").mkdir(parents=True)
     (data / "venv" / "python").write_text("fake-python")
 
-    # 1. Migration moves uv + wheel cache, removes legacy, keeps HF cache.
     bootstrap.migrate_legacy_cache()
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (data / "bin" / "uv").read_text() == "fake-uv"
@@ -83,22 +81,16 @@ try:
     assert (data / "venv" / "python").exists(), "migration must not touch user data"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
-    # 2. Migration is idempotent.
     bootstrap.migrate_legacy_cache()
 
-    # 3. Paths used by the app live under the user-data dir.
     assert bootstrap.venv_dir() == data / "venv"
     assert bootstrap.hf_dir() == data / "hf"
     assert bootstrap._uv_path() == data / "bin" / "uv"
 
-    # 3b. Transient job scratch also lives in the user-data dir (never the
-    #     shared system temp), and is created on demand.
     assert bootstrap.tmp_dir() == data / "tmp"
     assert bootstrap.tmp_dir().is_dir()
     (bootstrap.tmp_dir() / "blender_job.json").write_text("scratch")
 
-    # 4. Model-cache pinning: HF caches land under the user-data dir even when
-    #    the surrounding environment tries to override them.
     pinned = {"HF_HOME": "/elsewhere", "HF_HUB_CACHE": "/elsewhere/hub",
               "TRANSFORMERS_CACHE": "/elsewhere/tf",
               "PYTORCH_TRANSFORMERS_CACHE": "/elsewhere/pt",
@@ -110,7 +102,6 @@ try:
                 "PYTORCH_PRETRAINED_BERT_CACHE"):
         assert key not in env, f"inherited {key} must be stripped"
 
-    # 5. purge_data removes everything the add-on owns, nothing else.
     scratch = bootstrap.tmp_dir() / "blender_job.json"
     assert scratch.exists(), "job scratch must still exist before purge"
     assert bootstrap.purge_data() is True
@@ -119,11 +110,8 @@ try:
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
-    # 6. purge is safe to call when nothing was ever downloaded.
     assert bootstrap.purge_data() is True
 
-    # 7. CUDA discovery finds the venv's pip-provided cublas dir — and only
-    #    that one: torch's CUDA 13 tree must stay off the loader path.
     nv = data / "venv" / "lib" / "python3.11" / "site-packages" / "nvidia"
     cub = nv / "cublas" / "lib"
     cub.mkdir(parents=True)
@@ -137,7 +125,6 @@ try:
     assert str(decoy) not in dirs, "torch cu13 libs must not be exposed"
     assert len(dirs) == len(set(dirs)), "duplicate candidate dirs"
 
-    # 8. LD_LIBRARY_PATH candidates are kept once, non-existent ones dropped.
     _saved_ld = os.environ.get("LD_LIBRARY_PATH")
     os.environ["LD_LIBRARY_PATH"] = os.pathsep.join(
         [str(cub), str(cub), str(tmp / "nope")])
@@ -151,8 +138,6 @@ try:
         else:
             os.environ["LD_LIBRARY_PATH"] = _saved_ld
 
-    # 9. The worker env augments the loader path for cuda AND auto (the
-    #    default preference value), never for cpu, and stays isolated.
     for dev in ("cuda", "auto"):
         env = bootstrap.worker_env(dev)
         assert str(cub) in env.get("LD_LIBRARY_PATH", "").split(os.pathsep), (dev, env.get("LD_LIBRARY_PATH"))
@@ -160,9 +145,6 @@ try:
     env = bootstrap.worker_env("cpu")
     assert str(cub) not in (env.get("LD_LIBRARY_PATH") or ""), env.get("LD_LIBRARY_PATH")
 
-    # 10. Windows branch: venv Lib/site-packages layout, PATH (not
-    #     LD_LIBRARY_PATH), joined with os.pathsep, original PATH kept.
-    #     data_dir() resolves win32 through LOCALAPPDATA, not XDG_DATA_HOME.
     os.environ["LOCALAPPDATA"] = str(tmp / "localappdata")
     _saved_platform = sys.platform
     sys.platform = "win32"
@@ -184,7 +166,6 @@ try:
         sys.platform = _saved_platform
         os.environ.pop("LOCALAPPDATA", None)
 
-    # 11. No runtime tempfile call is left unscoped (would escape the data dir).
     _assert_temp_calls_are_scoped()
 
     print("test_paths: OK")

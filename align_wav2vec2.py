@@ -26,10 +26,6 @@ import numpy as np
 os.environ["TORCHDYNAMO_DISABLE"]  = "1"
 os.environ["TORCH_COMPILE_DISABLE"] = "1"
 
-# ---------------------------------------------------------------------------
-# Language → model mapping (HuggingFace wav2vec2 CTC models)
-# Downloaded once to ~/.cache/huggingface/hub.
-# ---------------------------------------------------------------------------
 
 _HF_MODELS = {
     "en": "facebook/wav2vec2-base-960h",
@@ -62,10 +58,6 @@ _HF_MODELS = {
 _DEFAULT_MODEL = "facebook/wav2vec2-large-960h-lv60-self"
 
 
-# ---------------------------------------------------------------------------
-# Model loading
-# ---------------------------------------------------------------------------
-
 def _load_model(language: str, device: str):
     """
     Returns (model, align_dict) where align_dict maps {char_lower: token_id}.
@@ -83,10 +75,6 @@ def _load_model(language: str, device: str):
     }
     return model, align_dict
 
-
-# ---------------------------------------------------------------------------
-# Flatten segments to word list
-# ---------------------------------------------------------------------------
 
 def _flatten_words(segments) -> list:
     words = []
@@ -107,10 +95,6 @@ def _flatten_words(segments) -> list:
                               "end":   float(seg.end)})
     return words
 
-
-# ---------------------------------------------------------------------------
-# CTC forced alignment (pure torch)
-# ---------------------------------------------------------------------------
 
 @dataclass
 class _Point:
@@ -181,21 +165,7 @@ def _merge_repeats(path, tokens):
     return spans
 
 
-# ---------------------------------------------------------------------------
-# Core alignment
-# ---------------------------------------------------------------------------
-
 def align(rel_segments, audio: np.ndarray, language: str, device: str):
-    """
-    Refine word timestamps via CTC forced alignment.
-
-    rel_segments : segment objects with CLIP-RELATIVE .start/.end timestamps
-    audio        : float32 16kHz mono numpy array, clip-relative
-    language     : ISO 639-1 language code
-    device       : 'cuda' | 'cpu'
-
-    Returns [{word, start, end}] (clip-relative seconds) or None on failure.
-    """
     import torch
 
     words = _flatten_words(rel_segments)
@@ -223,7 +193,6 @@ def align(rel_segments, audio: np.ndarray, language: str, device: str):
         print(f"[aligner] inference failed: {e}", flush=True)
         return None
 
-    # Build token sequence from transcript (unknown chars skipped)
     transcript = " ".join(w["word"] for w in words).lower()
     tokens = []
     for ch in transcript:
@@ -251,7 +220,6 @@ def align(rel_segments, audio: np.ndarray, language: str, device: str):
     # wav2vec2 has a fixed stride of 320 samples at 16kHz = 50 fps
     fps = 16000 / 320
 
-    # Split spans into per-word groups using space as delimiter
     groups, cur = [], []
     for sp in spans:
         if space is not None and sp.token == space:
