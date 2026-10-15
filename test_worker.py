@@ -38,7 +38,7 @@ def test_words_to_subtitles_blocks_and_gap():
         words, clip_frame_start=100, clip_frame_end=1000,
         fps=10, trim_start_s=0.0,
         max_chars=42, max_lines=2, max_gap_s=1.0,
-        rm_punct=False, text_case="default",
+        rm_punct=False, lang="en",
     )
     assert len(subs) == 2, subs
     assert subs[0]["text"] == "hello world", subs[0]
@@ -56,13 +56,15 @@ def test_words_to_subtitles_clamp_to_clip():
         words, clip_frame_start=0, clip_frame_end=35,
         fps=10, trim_start_s=0.0,
         max_chars=42, max_lines=2, max_gap_s=1.0,
-        rm_punct=False, text_case="default",
+        rm_punct=False, lang="en",
     )
     assert len(subs) == 1, subs
     assert subs[0]["frame_end"] == 35, subs[0]  # clamped from 40 to clip end
 
 
-def test_words_to_subtitles_punctuation_and_case():
+def test_words_to_subtitles_rm_punct_keeps_case():
+    # Text case is owned by the add-on now; the worker only strips punctuation,
+    # and it must do so AFTER using punctuation for break decisions.
     tw = _load("transcribe_worker")
     words = [{"word": "Hello,", "start": 0.0, "end": 0.3},
              {"word": "World!", "start": 0.3, "end": 0.6}]
@@ -70,9 +72,107 @@ def test_words_to_subtitles_punctuation_and_case():
         words, clip_frame_start=0, clip_frame_end=1000,
         fps=25, trim_start_s=0.0,
         max_chars=42, max_lines=2, max_gap_s=1.0,
-        rm_punct=True, text_case="upper",
+        rm_punct=True, lang="en",
     )
-    assert subs[0]["text"] == "HELLO WORLD", subs[0]
+    assert subs[0]["text"] == "Hello World", subs[0]
+
+
+def test_word_preservation_and_monotonic_frames():
+    # Regression for the old textwrap(...)[:max_lines] truncation: every word
+    # must survive, and frames must stay monotonic and non-overlapping.
+    tw = _load("transcribe_worker")
+    text = "the quick brown fox jumps over the lazy dog again and again"
+    words = [{"word": w, "start": i * 0.3, "end": i * 0.3 + 0.28}
+             for i, w in enumerate(text.split())]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=100000,
+        fps=30, trim_start_s=0.0,
+        max_chars=10, max_lines=2, max_gap_s=1.5,
+        rm_punct=False, lang="en",
+    )
+    got = [t for s in subs for t in s["text"].replace("\n", " ").split()]
+    assert got == [w["word"] for w in words], got
+    for a, b in zip(subs, subs[1:]):
+        assert a["frame_start"] <= a["frame_end"] <= b["frame_start"], (a, b)
+
+
+def test_terminal_and_clause_guards():
+    tw = _load("transcribe_worker")
+    assert tw._is_terminal("Hello!")
+    assert tw._is_terminal("Done.")
+    assert tw._is_terminal("结束。")
+    assert not tw._is_terminal("3.5")        # decimal, ends in a digit anyway
+    assert not tw._is_terminal("Dr.")        # abbreviation
+    assert not tw._is_terminal("U.S.")       # dotted initials
+    assert not tw._is_terminal("wait...")    # ellipsis is a clause, not terminal
+    assert not tw._is_terminal("word")
+    assert tw._is_clause("well,")
+    assert tw._is_clause("wait…")
+    assert not tw._is_clause("word")
+
+
+def test_function_word_seam_rebalanced():
+    # "the" stranded at the end of a caption should be pulled across to the
+    # next (or the blocks merged) so no caption dangles on a function word.
+    tw = _load("transcribe_worker")
+    words = [
+        {"word": "We",    "start": 0.0, "end": 0.3},
+        {"word": "drove", "start": 0.3, "end": 0.7},
+        {"word": "to",    "start": 0.7, "end": 0.9},
+        {"word": "the",   "start": 0.9, "end": 1.1},
+        {"word": "park",  "start": 1.1, "end": 1.4},
+        {"word": "yesterday.", "start": 1.4, "end": 1.9},
+    ]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=100000,
+        fps=30, trim_start_s=0.0,
+        max_chars=12, max_lines=2, max_gap_s=1.5,
+        rm_punct=False, lang="en",
+    )
+    for s in subs[:-1]:
+        last = s["text"].replace("\n", " ").split()[-1].strip(".,!?;:'\"").lower()
+        assert last not in tw._FUNCTION_WORDS["en"], s
+    got = [t for s in subs for t in s["text"].replace("\n", " ").split()]
+    assert got == [w["word"] for w in words], got
+
+
+def test_small_block_merged_when_close():
+    # A one-word flash caption followed by a close neighbour is absorbed.
+    tw = _load("transcribe_worker")
+    words = [
+        {"word": "Yes.",  "start": 0.0, "end": 0.3},
+        {"word": "We",    "start": 0.35, "end": 0.6},
+        {"word": "can",   "start": 0.6, "end": 0.8},
+        {"word": "start", "start": 0.8, "end": 1.1},
+        {"word": "now.",  "start": 1.1, "end": 1.4},
+    ]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=100000,
+        fps=30, trim_start_s=0.0,
+        max_chars=42, max_lines=2, max_gap_s=1.5,
+        rm_punct=False, lang="en",
+    )
+    got = [t for s in subs for t in s["text"].replace("\n", " ").split()]
+    assert got == [w["word"] for w in words], got
+    # "Yes." must not stand alone as its own flash caption
+    assert not any(s["text"].strip() == "Yes." for s in subs), subs
+    # boundary pass must be idempotent (fixpoint reached within the cap)
+    ctx = tw._Ctx(lang="en", max_chars=42, max_lines=2, max_dur=6.0, max_cps=17.0,
+                  min_chars=12, min_dur=0.8, merge_gap_max=0.45, use_punct=True)
+    seed = [[{"word": "a", "start": 0.0, "end": 0.4, "seg_id": 0},
+             {"word": "the", "start": 0.4, "end": 0.8, "seg_id": 0}]]
+    assert tw._boundary_pass(tw._boundary_pass(seed, ctx), ctx) == seed
+
+
+def test_duplicate_flagging():
+    tw = _load("transcribe_worker")
+    dup = [{"word": "the", "start": 0.0, "end": 0.2},
+           {"word": "the", "start": 0.2, "end": 0.4},
+           {"word": "cat", "start": 0.4, "end": 0.7}]
+    assert tw._has_duplicate(dup)
+    allowed = [{"word": "that", "start": 0.0, "end": 0.2},
+               {"word": "that", "start": 0.2, "end": 0.4}]
+    assert not tw._has_duplicate(allowed)
 
 
 def test_forced_alignment_trellis():
