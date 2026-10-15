@@ -20,27 +20,30 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
       - name: Resolve tag and version
         id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          tag="${{ github.event.inputs.tag || github.ref_name }}"
-          case "$tag" in
-            v*) ;;
-            *) echo "::error::tag must start with 'v': $tag"; exit 1 ;;
-          esac
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if ! printf '%s' "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::tag must look like vX.Y.Z: $tag"; exit 1
+          fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
       - name: Verify manifest version matches the tag
+        env:
+          WANT: ${{ steps.tag.outputs.version }}
         run: |
           manifest=$(grep -E '^version[[:space:]]*=' blender_manifest.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
-          want="${{ steps.tag.outputs.version }}"
-          if [ "$manifest" != "$want" ]; then
-            echo "::error::blender_manifest.toml version ($manifest) != tag ($want)"
+          if [ "$manifest" != "$WANT" ]; then
+            echo "::error::blender_manifest.toml version ($manifest) != tag ($WANT)"
             exit 1
           fi
 
