@@ -32,13 +32,10 @@ you can add it once and then install and update Auto-Subtitles from Blender.
    ```
    https://raw.githubusercontent.com/TahvoDev/blender_vse_social_subtitles/main/repo/index.json
    ```
-3. Give it a name (e.g. `TahvoDev`). This repository is **private**, so paste a
-   GitHub token with read access into **Access Token** (Blender sends it as the
-   request's `Authorization` header).
-4. Add the repository, then find **Auto-Subtitles** in the list and click
-   **Install**.
+3. Give it a name (e.g. `TahvoDev`), then add the repository.
+4. Find **Auto-Subtitles** in the list and click **Install**.
 
-Blender then offers updates here as new releases are published.
+The index is refreshed automatically on each release, so Blender offers updates here as new versions are published.
 
 ### From a release zip
 

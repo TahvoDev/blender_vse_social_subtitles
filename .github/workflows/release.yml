@@ -1,0 +1,122 @@
+name: Release
+
+# Publishing a version tag (vX.Y.Z) builds the extension package, creates the
+# GitHub Release, and refreshes repo/index.json so the Blender extension
+# repository never points at a stale build. Can also be re-run for an existing
+# tag from the Actions tab (workflow_dispatch).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)release, e.g. v1.4.2"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve tag and version
+        id: tag
+        run: |
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          case "$tag" in
+            v*) ;;
+            *) echo "::error::tag must start with 'v': $tag"; exit 1 ;;
+          esac
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify manifest version matches the tag
+        run: |
+          manifest=$(grep -E '^version[[:space:]]*=' blender_manifest.toml | head -1 | sed -E 's/.*"(.*)".*/\1/')
+          want="${{ steps.tag.outputs.version }}"
+          if [ "$manifest" != "$want" ]; then
+            echo "::error::blender_manifest.toml version ($manifest) != tag ($want)"
+            exit 1
+          fi
+
+      - name: Build extension package
+        id: build
+        env:
+          ZIP: auto_subtitles-${{ steps.tag.outputs.version }}.zip
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, zipfile
+          # Files shipped in the extension package (Blender reads the manifest
+          # at the archive root). Keep in sync when modules are added.
+          files = ["blender_manifest.toml", "__init__.py", "bootstrap.py",
+                   "transcribe_worker.py", "align_wav2vec2.py", "requirements.in",
+                   "LICENSE", "THIRDPARTY.md"]
+          missing = [f for f in files if not os.path.exists(f)]
+          if missing:
+              raise SystemExit(f"missing package files: {missing}")
+          out = os.environ["ZIP"]
+          with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+              for f in files:
+                  z.write(f, f)
+          data = open(out, "rb").read()
+          with open(os.environ["GITHUB_OUTPUT"], "a") as o:
+              o.write(f"size={len(data)}\n")
+              o.write(f"sha256={hashlib.sha256(data).hexdigest()}\n")
+          print(f"built {out}: {len(data)} bytes")
+          PY
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          zip="auto_subtitles-${VERSION}.zip"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip" --clobber
+          else
+            gh release create "$TAG" "$zip" \
+              --title "Auto-Subtitles ${VERSION}" \
+              --generate-notes
+          fi
+
+      - name: Refresh extension repository index
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
+          SIZE: ${{ steps.build.outputs.size }}
+          SHA: ${{ steps.build.outputs.sha256 }}
+        run: |
+          git fetch origin main
+          git checkout -B main origin/main
+          python3 - <<'PY'
+          import json, os
+          path = "repo/index.json"
+          with open(path) as f:
+              index = json.load(f)
+          entry = index["data"][0]
+          version, tag = os.environ["VERSION"], os.environ["TAG"]
+          entry["version"] = version
+          entry["archive_size"] = int(os.environ["SIZE"])
+          entry["archive_hash"] = "sha256:" + os.environ["SHA"]
+          entry["archive_url"] = (
+              f"https://github.com/{os.environ['GITHUB_REPOSITORY']}"
+              f"/releases/download/{tag}/auto_subtitles-{version}.zip")
+          with open(path, "w") as f:
+              json.dump(index, f, indent=2)
+              f.write("\n")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add repo/index.json
+          if git diff --cached --quiet; then
+            echo "extension index already up to date"
+            exit 0
+          fi
+          git commit -m "chore: update extension index for $TAG"
+          git push origin main
