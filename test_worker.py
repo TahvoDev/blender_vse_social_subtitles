@@ -104,6 +104,7 @@ def test_terminal_and_clause_guards():
     assert not tw._is_terminal("3.5")        # decimal, ends in a digit anyway
     assert not tw._is_terminal("Dr.")        # abbreviation
     assert not tw._is_terminal("U.S.")       # dotted initials
+    assert tw._is_terminal("No.")            # "no" is a word, not an abbreviation
     assert not tw._is_terminal("wait...")    # ellipsis is a clause, not terminal
     assert not tw._is_terminal("word")
     assert tw._is_clause("well,")
@@ -111,40 +112,49 @@ def test_terminal_and_clause_guards():
     assert not tw._is_clause("word")
 
 
+def _ctx(tw, **kw):
+    base = dict(lang="en", max_chars=20, max_lines=1, max_dur=6.0, max_cps=17.0,
+                min_chars=12, min_dur=0.8, merge_gap_max=0.45, use_punct=True)
+    base.update(kw)
+    return tw._Ctx(**base)
+
+
 def test_function_word_seam_rebalanced():
-    # "the" stranded at the end of a caption should be pulled across to the
-    # next (or the blocks merged) so no caption dangles on a function word.
+    # "to" stranded at the end of a caption must be pulled across to the next
+    # block (merge is impossible here: the pair exceeds max_chars*max_lines).
     tw = _load("transcribe_worker")
-    words = [
-        {"word": "We",    "start": 0.0, "end": 0.3},
-        {"word": "drove", "start": 0.3, "end": 0.7},
-        {"word": "to",    "start": 0.7, "end": 0.9},
-        {"word": "the",   "start": 0.9, "end": 1.1},
-        {"word": "park",  "start": 1.1, "end": 1.4},
-        {"word": "yesterday.", "start": 1.4, "end": 1.9},
+    ctx = _ctx(tw)
+    blocks = [
+        [{"word": "We", "start": 0.0, "end": 0.4, "seg_id": 0},
+         {"word": "drove", "start": 0.4, "end": 0.9, "seg_id": 0},
+         {"word": "the", "start": 0.9, "end": 1.2, "seg_id": 0},
+         {"word": "car", "start": 1.2, "end": 1.6, "seg_id": 0},
+         {"word": "to", "start": 1.6, "end": 1.8, "seg_id": 0}],
+        [{"word": "the", "start": 1.85, "end": 2.05, "seg_id": 0},
+         {"word": "old", "start": 2.05, "end": 2.4, "seg_id": 0},
+         {"word": "station.", "start": 2.4, "end": 3.0, "seg_id": 0}],
     ]
-    subs = tw._words_to_subtitles(
-        words, clip_frame_start=0, clip_frame_end=100000,
-        fps=30, trim_start_s=0.0,
-        max_chars=12, max_lines=2, max_gap_s=1.5,
-        rm_punct=False, lang="en",
-    )
-    for s in subs[:-1]:
-        last = s["text"].replace("\n", " ").split()[-1].strip(".,!?;:'\"").lower()
-        assert last not in tw._FUNCTION_WORDS["en"], s
-    got = [t for s in subs for t in s["text"].replace("\n", " ").split()]
-    assert got == [w["word"] for w in words], got
+    out = tw._boundary_pass(blocks, ctx)
+    assert len(out) == 2, out
+    # no caption dangles on a function word
+    for b in out[:-1]:
+        assert tw._token(b[-1]["word"]) not in tw._FUNCTION_WORDS["en"], b
+    got = [w["word"] for b in out for w in b]
+    assert got == [w["word"] for b in blocks for w in b], got
+    # no progress is possible on a second sweep -> idempotent
+    assert tw._boundary_pass(out, ctx) == out
 
 
-def test_small_block_merged_when_close():
-    # A one-word flash caption followed by a close neighbour is absorbed.
+def test_long_gap_is_not_merged():
+    # A silence the seed split on (gap > max_gap_s) must NOT be bridged back by
+    # the boundary/small passes, even if a seam looks awkward.
     tw = _load("transcribe_worker")
     words = [
-        {"word": "Yes.",  "start": 0.0, "end": 0.3},
-        {"word": "We",    "start": 0.35, "end": 0.6},
-        {"word": "can",   "start": 0.6, "end": 0.8},
-        {"word": "start", "start": 0.8, "end": 1.1},
-        {"word": "now.",  "start": 1.1, "end": 1.4},
+        {"word": "I",   "start": 0.0, "end": 0.3},
+        {"word": "saw", "start": 0.3, "end": 0.6},
+        {"word": "the", "start": 0.6, "end": 0.9},
+        {"word": "cat", "start": 3.9, "end": 4.2},
+        {"word": "run.", "start": 4.2, "end": 4.5},
     ]
     subs = tw._words_to_subtitles(
         words, clip_frame_start=0, clip_frame_end=100000,
@@ -152,16 +162,26 @@ def test_small_block_merged_when_close():
         max_chars=42, max_lines=2, max_gap_s=1.5,
         rm_punct=False, lang="en",
     )
-    got = [t for s in subs for t in s["text"].replace("\n", " ").split()]
-    assert got == [w["word"] for w in words], got
-    # "Yes." must not stand alone as its own flash caption
-    assert not any(s["text"].strip() == "Yes." for s in subs), subs
-    # boundary pass must be idempotent (fixpoint reached within the cap)
-    ctx = tw._Ctx(lang="en", max_chars=42, max_lines=2, max_dur=6.0, max_cps=17.0,
-                  min_chars=12, min_dur=0.8, merge_gap_max=0.45, use_punct=True)
-    seed = [[{"word": "a", "start": 0.0, "end": 0.4, "seg_id": 0},
-             {"word": "the", "start": 0.4, "end": 0.8, "seg_id": 0}]]
-    assert tw._boundary_pass(tw._boundary_pass(seed, ctx), ctx) == seed
+    assert len(subs) == 2, subs
+    assert subs[0]["text"].split()[-1] == "the", subs
+
+
+def test_small_block_merged_when_close():
+    # A one-word flash caption followed by a close neighbour is absorbed.
+    tw = _load("transcribe_worker")
+    ctx = _ctx(tw, max_chars=42, max_lines=2, min_chars=12, min_dur=0.8,
+               merge_gap_max=0.45)
+    blocks = [
+        [{"word": "Yes.", "start": 0.0, "end": 0.3, "seg_id": 0}],
+        [{"word": "We", "start": 0.35, "end": 0.6, "seg_id": 0},
+         {"word": "can", "start": 0.6, "end": 0.8, "seg_id": 0},
+         {"word": "start", "start": 0.8, "end": 1.1, "seg_id": 0},
+         {"word": "now.", "start": 1.1, "end": 1.4, "seg_id": 0}],
+    ]
+    out = tw._small_pass(blocks, ctx)
+    assert len(out) == 1, out
+    got = [w["word"] for b in out for w in b]
+    assert got == ["Yes.", "We", "can", "start", "now."], got
 
 
 def test_duplicate_flagging():

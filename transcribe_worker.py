@@ -89,11 +89,11 @@ _CONTINUATION_WORDS = {
 
 _ABBREV = {
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",
-    "i.e", "no", "fig", "al", "inc", "ltd", "co", "corp", "dept", "est",
+    "i.e", "fig", "al", "inc", "ltd", "co", "corp", "dept", "est",
     "approx", "min", "max", "u.s", "u.k", "a.m", "p.m", "cf", "vol",
 }
 
-_DUP_ALLOW = {"that that", "had had", "no no no", "very very",
+_DUP_ALLOW = {"that that", "had had", "no no", "very very",
               "really really", "ha ha", "bye bye", "yes yes"}
 
 
@@ -192,8 +192,12 @@ def _wrap_block(words, max_chars, max_lines):
     if n == 0:
         return None
 
+    plen = [0] * (n + 1)
+    for k in range(n):
+        plen[k + 1] = plen[k] + len(toks[k])
+
     def width(i, j):
-        return sum(len(toks[k]) for k in range(i, j)) + (j - i - 1)
+        return plen[j] - plen[i] + (j - i - 1)
 
     INF = float("inf")
     cost = [[INF] * (max_lines + 1) for _ in range(n + 1)]
@@ -258,15 +262,17 @@ def _boundary_badness(prev, next_, ctx):
     """How badly the seam between two blocks reads (0 = fine).
 
     One combined check for F2 (function word before), F3 (continuation word
-    after) and F4 (no terminal punctuation across a short gap).
+    after) and F4 (no terminal punctuation). Only seams closer than
+    merge_gap_max are candidates, so a silence the seed deliberately split on
+    (gap > max_gap_s) is never merged back.
     """
     if not prev or not next_:
         return 0
+    if next_[0]["start"] - prev[-1]["end"] > ctx.merge_gap_max:
+        return 0
     bad = 0
     if ctx.use_punct and not _is_terminal(prev[-1]["word"]):
-        gap = next_[0]["start"] - prev[-1]["end"]
-        if gap <= ctx.merge_gap_max:
-            bad += 1
+        bad += 1
     if _is_function_word(prev[-1]["word"], ctx.lang):
         bad += 1
     if _is_continuation_word(next_[0]["word"], ctx.lang):
@@ -332,6 +338,11 @@ def _fit_blocks(blocks, ctx, depth=0):
 
 
 def _boundary_pass(blocks, ctx):
+    """Improve bad seams by rebreak/merge, at most _PASS_CAP sweeps.
+
+    A rebreak can re-dirty the previous seam, so this is a bounded sweep, not a
+    strict fixpoint; _PASS_CAP is the safety net.
+    """
     if len(blocks) < 2:
         return blocks
     for _ in range(_PASS_CAP):
@@ -365,7 +376,7 @@ def _is_small(words, ctx):
 
 
 def _small_pass(blocks, ctx):
-    """Merge orphan/micro-island blocks (F1/F5) into a neighbour when close."""
+    """Merge orphan/micro-island blocks (F1) into a neighbour when close."""
     if ctx.min_chars <= 0 and ctx.min_dur <= 0:
         return blocks
     changed = True
@@ -421,7 +432,7 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
       * balanced, non-truncating line wrap (never drops a word),
       * a boundary pass that rebreatks or merges wrongly-cut phrases (F2/F3/F4),
       * a small-block pass that folds orphan/flash captions into a neighbour
-        (F1/F5),
+        (F1),
       * conservative duplicate flagging (W4).
 
     Punctuation- and function-word-based decisions read the ORIGINAL tokens;
@@ -501,14 +512,13 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         if _is_small(bl, ctx):
             flags.append("F1")
         if bi + 1 < len(blocks) and _boundary_badness(bl, blocks[bi + 1], ctx) > 0:
-            # A seam the pass could not improve within the caps.
+            # A seam the pass could not improve within the caps. F4 (no
+            # terminal punctuation mid-sentence) is left out on purpose: it is
+            # the normal case, so flagging it would drown the others.
             if _is_function_word(bl[-1]["word"], ctx.lang):
                 flags.append("F2")
             if _is_continuation_word(blocks[bi + 1][0]["word"], ctx.lang):
                 flags.append("F3")
-            if (ctx.use_punct and not _is_terminal(bl[-1]["word"])
-                    and blocks[bi + 1][0]["start"] - bl[-1]["end"] <= ctx.merge_gap_max):
-                flags.append("F4")
         span = _span(bl)
         if span > max_dur:
             flags.append("DUR")
@@ -659,11 +669,17 @@ def transcribe_clip(clip, model, args, clip_idx, n_clips, device):
             )
             if aligned:
                 # Map aligned words back to their whisper segment so the
-                # segment boundary can act as a soft break hint.
+                # segment boundary can act as a soft break hint. The per-segment
+                # counts must match align_wav2vec2._flatten_words exactly or
+                # every later word shifts.
                 seg_ids = []
                 for si, seg in enumerate(segments):
-                    ws = [w for w in (seg.words or []) if w.word.strip()]
-                    seg_ids.extend([si] * (len(ws) or 1))
+                    ws = seg.words or []
+                    if ws:
+                        n = sum(1 for w in ws if w.word.strip())
+                    else:
+                        n = 1 if seg.text.strip() else 0
+                    seg_ids.extend([si] * n)
                 all_words = [
                     {"word":  w["word"],
                      "start": w["start"] + trim_start_s,
