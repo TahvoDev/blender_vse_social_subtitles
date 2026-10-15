@@ -9,7 +9,7 @@
       "version": "1.4.1",
       "type": "add-on",
       "archive_size": 38703,
-      "archive_hash": "sha256:5c854026ff3b444a31562781aec97a3540f9f27fed3b182782c535ec2ec7ac40",
+      "archive_hash": "sha256:e0a92a4d75293646929c4290c0c31bb5c48e7b45daf68158c032ee42acf61555",
       "archive_url": "https://github.com/TahvoDev/blender_vse_social_subtitles/releases/download/v1.4.1/auto_subtitles-1.4.1.zip",
       "blender_version_min": "5.0.0",
       "maintainer": "TahvoDev",
