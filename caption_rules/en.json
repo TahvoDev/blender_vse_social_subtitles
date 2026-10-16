@@ -1,0 +1,25 @@
+{
+  "function_words": [
+    "the", "a", "an", "and", "or", "but", "nor", "so", "yet", "for",
+    "of", "to", "in", "on", "at", "by", "with", "from", "into", "onto",
+    "upon", "over", "under", "above", "below", "between", "among",
+    "through", "during", "before", "after", "against", "about", "as",
+    "than", "that", "which", "who", "whom", "whose", "if", "then",
+    "because", "while", "when", "where", "whether", "is", "are", "was",
+    "were", "be", "been", "being", "am", "do", "does", "did", "has",
+    "have", "had", "will", "would", "shall", "should", "can", "could",
+    "may", "might", "must", "not", "no", "its", "his", "her", "their",
+    "our", "your", "my", "him", "them", "us", "me", "this", "these",
+    "those", "there", "here"
+  ],
+  "continuation_words": [
+    "and", "but", "or", "so", "then", "because", "which", "that", "who",
+    "whom", "whose", "if", "when", "while", "where", "as", "nor", "yet",
+    "though", "although", "unless", "until", "since"
+  ],
+  "abbreviations": [
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",
+    "i.e", "fig", "al", "inc", "ltd", "co", "corp", "dept", "est",
+    "approx", "min", "max", "u.s", "u.k", "a.m", "p.m", "cf", "vol"
+  ]
+}
