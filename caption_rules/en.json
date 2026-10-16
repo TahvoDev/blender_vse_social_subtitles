@@ -21,9 +21,5 @@
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g",
     "i.e", "fig", "al", "inc", "ltd", "co", "corp", "dept", "est",
     "approx", "min", "max", "u.s", "u.k", "a.m", "p.m", "cf", "vol"
-  ],
-  "dup_allow": [
-    "that that", "had had", "no no", "very very",
-    "really really", "ha ha", "bye bye", "yes yes"
   ]
 }

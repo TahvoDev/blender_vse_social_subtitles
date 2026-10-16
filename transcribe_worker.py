@@ -79,8 +79,8 @@ def _load_rules(lang):
 
     function_words (articles/prepositions/conjunctions/auxiliaries/possessive
     determiners) read as broken at a caption edge; continuation_words imply the
-    previous sentence carries on; abbreviations/dup_allow refine the terminal
-    and duplicate checks. A missing file means that language has NO rules —
+    previous sentence carries on; abbreviations refine the terminal check. A
+    missing file means that language has NO rules —
     every word-based rule is disabled for it (never an English fallback).
     """
     if lang not in _RULES_CACHE:
@@ -88,7 +88,7 @@ def _load_rules(lang):
         _RULES_CACHE[lang] = {
             k: set(raw.get(k, ()))
             for k in ("function_words", "continuation_words",
-                      "abbreviations", "dup_allow")
+                      "abbreviations")
         }
     return _RULES_CACHE[lang]
 
@@ -392,20 +392,6 @@ def _small_pass(blocks, ctx):
     return blocks
 
 
-def _has_duplicate(words, lang):
-    """W4: exact duplicate tokens within a tiny gap, honouring an allowlist of
-    genuine repetitions ("had had", "no no")."""
-    allow = _load_rules(lang)["dup_allow"]
-    for a, b in zip(words, words[1:]):
-        if b["start"] - a["end"] > 0.2:
-            continue
-        ka = a["word"].strip(string.punctuation).lower()
-        kb = b["word"].strip(string.punctuation).lower()
-        if ka and ka == kb and f"{ka} {kb}" not in allow:
-            return True
-    return False
-
-
 def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
                          fps, trim_start_s,
                          max_chars, max_lines, max_gap_s,
@@ -422,8 +408,7 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
       * balanced, non-truncating line wrap (never drops a word),
       * a boundary pass that rebreatks or merges wrongly-cut phrases (F2/F3/F4),
       * a small-block pass that folds orphan/flash captions into a neighbour
-        (F1),
-      * conservative duplicate flagging (W4).
+        (F1).
 
     Punctuation- and function-word-based decisions read the ORIGINAL tokens;
     rm_punct is applied last so the cues survive. Text case is owned by the
@@ -497,8 +482,6 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         flags = []
         if any(len(ln) > max_chars for ln in lines):
             flags.append("W1")
-        if _has_duplicate(bl, ctx.lang):
-            flags.append("W4")
         if _is_small(bl, ctx):
             flags.append("F1")
         if bi + 1 < len(blocks) and _boundary_badness(bl, blocks[bi + 1], ctx) > 0:

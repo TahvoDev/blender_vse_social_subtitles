@@ -218,17 +218,6 @@ def test_small_block_merged_when_close():
     assert got == ["Yes.", "We", "can", "start", "now."], got
 
 
-def test_duplicate_flagging():
-    tw = _load("transcribe_worker")
-    dup = [{"word": "the", "start": 0.0, "end": 0.2},
-           {"word": "the", "start": 0.2, "end": 0.4},
-           {"word": "cat", "start": 0.4, "end": 0.7}]
-    assert tw._has_duplicate(dup, "en")
-    allowed = [{"word": "that", "start": 0.0, "end": 0.2},
-               {"word": "that", "start": 0.2, "end": 0.4}]
-    assert not tw._has_duplicate(allowed, "en")
-
-
 def test_forced_alignment_trellis():
     try:
         import numpy as np
