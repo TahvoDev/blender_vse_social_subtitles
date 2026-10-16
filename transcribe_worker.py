@@ -238,21 +238,12 @@ def _wrap_block(words, max_chars, max_lines):
 
 
 def _structural_fits(words, ctx):
-    """Cap/line/duration fit — the parts a split can actually fix."""
+    """Cap/line/duration fit — the parts a split can actually fix. Reading
+    speed (CPS) is only ever reported as a flag, never enforced, so it does not
+    belong here — enforcing it would veto legitimate seam fixes."""
     if not words or _span(words) > ctx.max_dur:
         return False
     return _wrap_block(words, ctx.max_chars, ctx.max_lines) is not None
-
-
-def _fits(words, ctx):
-    """Full fit, including reading speed. Used to gate merges/rebreatks so a
-    remedy never creates an over-dense block."""
-    if not _structural_fits(words, ctx):
-        return False
-    span = _span(words)
-    if span > 0 and _chars(words) / span > ctx.max_cps:
-        return False
-    return True
 
 
 def _boundary_badness(prev, next_, ctx):
@@ -280,20 +271,21 @@ def _boundary_badness(prev, next_, ctx):
 def _rebreak(prev, next_, ctx):
     """Shift words across the seam if that strictly lowers its badness.
 
-    Returns (new_prev, new_next) or None. Both sides must pass _fits.
+    Returns (new_prev, new_next) or None. Both sides must stay within the
+    cap/line/duration limits (CPS is not enforced — it is only a flag).
     """
     cur = _boundary_badness(prev, next_, ctx)
     best = None
     for k in range(1, len(prev)):
         p, nx = prev[:-k], prev[-k:] + next_
-        if not (_fits(p, ctx) and _fits(nx, ctx)):
+        if not (_structural_fits(p, ctx) and _structural_fits(nx, ctx)):
             continue
         nb = _boundary_badness(p, nx, ctx)
         if nb < cur and (best is None or nb < best[0]):
             best = (nb, (p, nx))
     for k in range(1, len(next_)):
         p, nx = prev + next_[:k], next_[k:]
-        if not (_fits(p, ctx) and _fits(nx, ctx)):
+        if not (_structural_fits(p, ctx) and _structural_fits(nx, ctx)):
             continue
         nb = _boundary_badness(p, nx, ctx)
         if nb < cur and (best is None or nb < best[0]):
@@ -353,7 +345,7 @@ def _boundary_pass(blocks, ctx):
                     changed = True
                 else:
                     merged = blocks[i] + blocks[i + 1]
-                    if _fits(merged, ctx):
+                    if _structural_fits(merged, ctx):
                         blocks[i:i + 2] = [merged]
                         changed = True
             i += 1
@@ -383,7 +375,7 @@ def _small_pass(blocks, ctx):
         while i < len(blocks):
             if i > 0 and _is_small(blocks[i], ctx):
                 gap = blocks[i][0]["start"] - blocks[i - 1][-1]["end"]
-                if gap <= ctx.merge_gap_max and _fits(blocks[i - 1] + blocks[i], ctx):
+                if gap <= ctx.merge_gap_max and _structural_fits(blocks[i - 1] + blocks[i], ctx):
                     blocks[i - 1:i + 1] = [blocks[i - 1] + blocks[i]]
                     changed = True
                     continue
@@ -392,7 +384,7 @@ def _small_pass(blocks, ctx):
         while i < len(blocks) - 1:
             if _is_small(blocks[i], ctx):
                 gap = blocks[i + 1][0]["start"] - blocks[i][-1]["end"]
-                if gap <= ctx.merge_gap_max and _fits(blocks[i] + blocks[i + 1], ctx):
+                if gap <= ctx.merge_gap_max and _structural_fits(blocks[i] + blocks[i + 1], ctx):
                     blocks[i:i + 2] = [blocks[i] + blocks[i + 1]]
                     changed = True
                     continue

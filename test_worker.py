@@ -155,6 +155,26 @@ def test_function_word_seam_rebalanced():
         assert tw._token(b[-1]["word"]) not in tw._load_rules("en")["function_words"], b
     got = [w["word"] for b in out for w in b]
     assert got == [w["word"] for b in blocks for w in b], got
+
+
+def test_rebreak_not_blocked_by_cps():
+    # The clean rebreak makes a short, fast caption ("Are the", spoken in
+    # 0.2s). CPS is only a flag, so it must NOT veto the fix; otherwise the
+    # caption is left dangling on the function word "Are".
+    tw = _load("transcribe_worker")
+    ctx = _ctx(tw, max_chars=10, max_lines=2, max_cps=1.0)
+    blocks = [
+        [{"word": "Marbles", "start": 0.0, "end": 0.4, "seg_id": 0},
+         {"word": "to", "start": 0.4, "end": 0.5, "seg_id": 0},
+         {"word": "race.", "start": 0.5, "end": 0.7, "seg_id": 0},
+         {"word": "Are", "start": 0.7, "end": 0.8, "seg_id": 0}],
+        [{"word": "the", "start": 0.8, "end": 0.9, "seg_id": 0}],
+    ]
+    out = tw._boundary_pass(blocks, ctx)
+    assert out[0][-1]["word"] == "race.", out
+    got = [w["word"] for b in out for w in b]
+    assert got == [w["word"] for b in blocks for w in b], got
+
     # no progress is possible on a second sweep -> idempotent
     assert tw._boundary_pass(out, ctx) == out
 
