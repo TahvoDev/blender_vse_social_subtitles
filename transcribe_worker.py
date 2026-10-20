@@ -414,6 +414,9 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
     rm_punct is applied last so the cues survive. Text case is owned by the
     add-on, not here. Each block appears when its first word is spoken and
     persists until the next block starts (seamless) or max_gap_s expires.
+    Each block also carries the frame span of its individual words in
+    ``words``. This is plumbing for a future word-level effect; the current
+    add-on only uses the block timings to create caption strips.
     """
     if not words:
         return []
@@ -502,7 +505,18 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         fe = to_frame(bl[-1]["end"])
         if fe <= fs:
             fe = fs + 1
+        word_frames = []
+        for w in bl:
+            if rm_punct and not _remove_punctuation(w["word"]).strip():
+                continue
+            ws = to_frame(w["start"])
+            we = to_frame(w["end"])
+            if we <= ws:
+                we = ws + 1
+            word_frames.append({"start": ws, "end": we})
         sub = {"text": raw, "frame_start": fs, "frame_end": fe}
+        if word_frames:
+            sub["words"] = word_frames
         if flags:
             sub["flags"] = flags
         subs.append(sub)
@@ -527,6 +541,15 @@ def _words_to_subtitles(words, clip_frame_start, clip_frame_end,
         if fe <= fs:
             fe = fs + 1
         sub = {"text": s["text"], "frame_start": fs, "frame_end": fe}
+        word_frames = []
+        for w in s.get("words", ()):
+            ws = max(w["start"], fs)
+            we = min(w["end"], fe)
+            if we <= ws:
+                continue
+            word_frames.append({"start": ws, "end": we})
+        if word_frames:
+            sub["words"] = word_frames
         if s.get("flags"):
             sub["flags"] = s["flags"]
         out.append(sub)

@@ -53,7 +53,7 @@ archive root, then install that zip the same way:
 
 ```bash
 zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
-    presets.py transcribe_worker.py align_wav2vec2.py requirements.in \
+    presets.py animations.py transcribe_worker.py align_wav2vec2.py requirements.in \
     caption_rules/defaults.json caption_rules/en.json LICENSE THIRDPARTY.md
 ```
 
@@ -120,14 +120,20 @@ the venv. The next **Generate Subtitles** rebuilds it automatically.
 | Max Gap (frames) | How long a subtitle lingers after the last word; also splits blocks on longer silences |
 | Text Case | Default / UPPERCASE / lowercase / Title Case |
 | Remove Punctuation | Strip punctuation from output text |
+| Entrance | None / Pop-in / Fade-in / Pop + Fade, applied to new subtitle strips |
+| Pop Start Scale | Starting caption size as a fraction of the final size |
+| Pop Overshoot | Peak caption size as a fraction of the final size |
+| Pop Frames | Length of the pop animation in frames |
+| Fade Frames | Length of the fade animation in frames |
 | Presets | Save the current settings under a name, or apply a saved preset |
 
 ### Presets
 
 The **Presets** row at the top of the panel saves and loads the subtitle
 settings: model, language, text channel, max chars/line, max lines, max gap,
-text case and punctuation removal. The compute device is not part of a preset
-because it is a global add-on preference.
+text case, punctuation removal, and the entrance animation settings. The
+compute device is not part of a preset because it is a global add-on
+preference.
 
 - Presets are global: they are shared by every `.blend` file and survive
   Blender restarts.
@@ -138,6 +144,25 @@ because it is a global add-on preference.
 - Use **Presets → Delete Preset…** to remove one; it asks for confirmation.
 - Presets are stored in the extension's user-data dir. **Remove Downloaded
   Data** keeps them; removing the extension deletes them.
+
+### Animations
+
+The **Animation** section adds a short entrance to every generated subtitle:
+
+- **Pop-in** — the caption starts smaller, overshoots the final size, then
+  settles. The three keys sit at the strip start, roughly 40% through the pop,
+  and the end of the pop.
+- **Fade-in** — `blend_alpha` rises from 0 to 1 over the fade length.
+- **Pop + Fade** — both effects at once.
+
+Animations are baked as keyframes on the TEXT strip, so they remain editable in
+the Graph Editor and do not change subtitle timing. They are applied only when
+strips are created; change the settings and regenerate to update existing
+strips. Pop/fade lengths are clamped to the caption duration.
+
+The worker also computes per-word frame spans for a future word-level effect;
+this release only uses the block timings when creating strips and does not
+highlight individual words.
 
 ### Device (Add-on Preferences)
 
