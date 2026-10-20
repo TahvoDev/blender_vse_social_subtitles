@@ -52,6 +52,7 @@ jobs:
           python3 test_presets.py
           python3 test_paths.py
           python3 test_worker.py
+          python3 test_animations.py
 
       - name: Build extension package
         id: build
@@ -64,7 +65,7 @@ jobs:
           # at the archive root). Keep in sync when modules are added.
           files = ["blender_manifest.toml", "__init__.py", "bootstrap.py",
                    "presets.py", "transcribe_worker.py", "align_wav2vec2.py",
-                   "requirements.in",
+                   "animations.py", "requirements.in",
                    "caption_rules/defaults.json", "caption_rules/en.json",
                    "LICENSE", "THIRDPARTY.md"]
           missing = [f for f in files if not os.path.exists(f)]

@@ -25,6 +25,11 @@ SETTINGS = (
     "as_max_gap_fr",
     "as_rm_punct",
     "as_text_case",
+    "as_anim_entrance",
+    "as_anim_pop_start",
+    "as_anim_pop_overshoot",
+    "as_anim_pop_frames",
+    "as_anim_fade_frames",
 )
 
 
@@ -124,8 +129,9 @@ def apply_values(target, values) -> int:
     return applied
 
 
-def validate(values, enums, ranges, bool_keys=()) -> dict:
-    """Keep valid preset values, clamping integers and dropping bad fields."""
+def validate(values, enums, ranges, bool_keys=(), floats=None) -> dict:
+    """Keep valid preset values, clamping numbers and dropping bad fields."""
+    floats = floats or {}
     clean = {}
     for key in SETTINGS:
         if key not in values:
@@ -147,6 +153,15 @@ def validate(values, enums, ranges, bool_keys=()) -> dict:
                 continue
             low, high = limits
             clean[key] = max(low, min(high, value))
+            continue
+
+        limits = floats.get(key)
+        if limits is not None:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+                continue
+            low, high = limits
+            clean[key] = max(low, min(high, float(value)))
             continue
 
         if key in bool_keys:

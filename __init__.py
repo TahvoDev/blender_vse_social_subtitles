@@ -18,8 +18,9 @@ import subprocess
 from pathlib import Path
 
 try:
-    from . import bootstrap, presets
+    from . import animations, bootstrap, presets
 except ImportError:  # direct execution / legacy layout
+    import animations
     import bootstrap
     import presets
 
@@ -193,17 +194,32 @@ CASES = [
     ("title",   "Title Case", ""),
 ]
 
+ANIMATIONS = [
+    ("none", "None",       "No entrance animation"),
+    ("pop",  "Pop-in",     "Scale the caption in with a slight overshoot"),
+    ("fade", "Fade-in",    "Fade the caption in"),
+    ("both", "Pop + Fade", "Pop and fade in together"),
+]
+
 _ENUM_VALUES = {
-    "as_model":     {value for value, _label, _desc in MODELS},
-    "as_language":  {value for value, _label, _desc in LANGUAGES},
-    "as_text_case": {value for value, _label, _desc in CASES},
+    "as_model":         {value for value, _label, _desc in MODELS},
+    "as_language":      {value for value, _label, _desc in LANGUAGES},
+    "as_text_case":     {value for value, _label, _desc in CASES},
+    "as_anim_entrance": {value for value, _label, _desc in ANIMATIONS},
 }
 
 _INT_RANGES = {
-    "as_channel":    (1, 128),
-    "as_max_chars":  (10, 120),
-    "as_max_lines":  (1, 5),
-    "as_max_gap_fr": (1, 500),
+    "as_channel":          (1, 128),
+    "as_max_chars":        (10, 120),
+    "as_max_lines":        (1, 5),
+    "as_max_gap_fr":       (1, 500),
+    "as_anim_pop_frames":  (2, 30),
+    "as_anim_fade_frames": (1, 60),
+}
+
+_FLOAT_RANGES = {
+    "as_anim_pop_start":     (0.1, 1.0),
+    "as_anim_pop_overshoot": (1.0, 3.0),
 }
 
 
@@ -213,7 +229,7 @@ def _presets_path():
 
 def _validated_preset(values):
     return presets.validate(
-        values, _ENUM_VALUES, _INT_RANGES, ("as_rm_punct",)
+        values, _ENUM_VALUES, _INT_RANGES, ("as_rm_punct",), _FLOAT_RANGES
     )
 
 
@@ -239,13 +255,30 @@ def _register_props():
     )
     S.as_rm_punct  = bpy.props.BoolProperty(name="Remove Punctuation", default=False)
     S.as_text_case = bpy.props.EnumProperty(name="Text Case", items=CASES, default="default")
+    S.as_anim_entrance = bpy.props.EnumProperty(
+        name="Entrance", items=ANIMATIONS, default="none"
+    )
+    S.as_anim_pop_start = bpy.props.FloatProperty(
+        name="Pop Start Scale", default=0.88, min=0.1, max=1.0
+    )
+    S.as_anim_pop_overshoot = bpy.props.FloatProperty(
+        name="Pop Overshoot", default=1.15, min=1.0, max=3.0
+    )
+    S.as_anim_pop_frames = bpy.props.IntProperty(
+        name="Pop Frames", default=6, min=2, max=30
+    )
+    S.as_anim_fade_frames = bpy.props.IntProperty(
+        name="Fade Frames", default=8, min=1, max=60
+    )
 
 
 def _unregister_props():
     S = bpy.types.Scene
     for p in ("as_model", "as_language", "as_channel",
               "as_max_chars", "as_max_lines", "as_max_gap_fr",
-              "as_rm_punct", "as_text_case"):
+              "as_rm_punct", "as_text_case",
+              "as_anim_entrance", "as_anim_pop_start", "as_anim_pop_overshoot",
+              "as_anim_pop_frames", "as_anim_fade_frames"):
         if hasattr(S, p):
             try:
                 delattr(S, p)
@@ -398,6 +431,21 @@ def _create_strips_from_result(result_path):
         ts.use_shadow = True
         ts.use_box    = True
         ts.box_margin = 0.01
+
+        try:
+            plan = animations.plan_entrance(
+                ts.font_size,
+                ts.frame_final_start,
+                ts.frame_final_end,
+                scene.as_anim_entrance,
+                pop_start=scene.as_anim_pop_start,
+                pop_overshoot=scene.as_anim_pop_overshoot,
+                pop_frames=scene.as_anim_pop_frames,
+                fade_frames=scene.as_anim_fade_frames,
+            )
+            animations.apply_entrance(ts, plan, scene)
+        except Exception as err:
+            print(f"[Auto-Subtitles] Animation failed for {ts.name}: {err}")
 
     _job.cleanup()
 
@@ -887,6 +935,18 @@ class AS_PT_Panel(bpy.types.Panel):
         col.label(text="Formatting", icon="FONT_DATA")
         col.prop(scene, "as_text_case")
         col.prop(scene, "as_rm_punct")
+
+        layout.separator()
+
+        col = layout.column(align=True)
+        col.label(text="Animation", icon="ANIM")
+        col.prop(scene, "as_anim_entrance")
+        if scene.as_anim_entrance in ("pop", "both"):
+            col.prop(scene, "as_anim_pop_start")
+            col.prop(scene, "as_anim_pop_overshoot")
+            col.prop(scene, "as_anim_pop_frames")
+        if scene.as_anim_entrance in ("fade", "both"):
+            col.prop(scene, "as_anim_fade_frames")
 
         layout.separator()
 

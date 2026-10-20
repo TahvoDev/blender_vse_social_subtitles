@@ -38,7 +38,7 @@ def _assert_temp_calls_are_scoped():
     """
     import ast
     for name in ("bootstrap.py", "__init__.py", "transcribe_worker.py",
-                 "align_wav2vec2.py", "presets.py"):
+                 "align_wav2vec2.py", "presets.py", "animations.py"):
         tree = ast.parse((Path(__file__).parent / name).read_text(encoding="utf-8"),
                          filename=name)
         for node in ast.walk(tree):

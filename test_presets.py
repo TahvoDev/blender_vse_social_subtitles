@@ -34,6 +34,11 @@ class FakeScene:
     as_max_gap_fr = 36
     as_rm_punct = False
     as_text_case = "default"
+    as_anim_entrance = "none"
+    as_anim_pop_start = 0.88
+    as_anim_pop_overshoot = 1.15
+    as_anim_pop_frames = 6
+    as_anim_fade_frames = 8
 
 
 def test_snapshot_fields():
@@ -42,6 +47,8 @@ def test_snapshot_fields():
     assert set(values) == set(p.SETTINGS), values
     assert values["as_model"] == "base"
     assert values["as_max_gap_fr"] == 36
+    assert values["as_anim_entrance"] == "none"
+    assert values["as_anim_pop_start"] == 0.88
 
 
 def test_round_trip_and_order():
@@ -140,6 +147,24 @@ def test_validate_clamps_and_rejects():
     assert p.validate(
         {"as_rm_punct": True}, {}, {}, ("as_rm_punct",)
     ) == {"as_rm_punct": True}
+
+
+def test_validate_clamps_floats():
+    p = _load("presets")
+    floats = {
+        "as_anim_pop_start": (0.1, 1.0),
+        "as_anim_pop_overshoot": (1.0, 3.0),
+    }
+    clean = p.validate({
+        "as_anim_pop_start": 0.05,
+        "as_anim_pop_overshoot": 9.0,
+    }, {}, {}, (), floats)
+    assert clean == {
+        "as_anim_pop_start": 0.1,
+        "as_anim_pop_overshoot": 3.0,
+    }, clean
+    assert p.validate({"as_anim_pop_start": True}, {}, {}, (), floats) == {}
+    assert p.validate({"as_anim_pop_start": "x"}, {}, {}, (), floats) == {}
 
 
 def test_unknown_and_malformed_entries_are_dropped():

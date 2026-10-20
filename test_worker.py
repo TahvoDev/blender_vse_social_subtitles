@@ -62,6 +62,75 @@ def test_words_to_subtitles_clamp_to_clip():
     assert subs[0]["frame_end"] == 35, subs[0]  # clamped from 40 to clip end
 
 
+def test_words_to_subtitles_emits_word_timings():
+    tw = _load("transcribe_worker")
+    words = [
+        {"word": "hello", "start": 0.0, "end": 0.4},
+        {"word": "brave", "start": 0.5, "end": 0.9},
+        {"word": "world", "start": 1.0, "end": 1.4},
+    ]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=100, clip_frame_end=1000,
+        fps=10, trim_start_s=0.0,
+        max_chars=42, max_lines=2, max_gap_s=1.0,
+        rm_punct=False, lang="en",
+    )
+    assert len(subs) == 1, subs
+    assert subs[0]["words"] == [
+        {"start": 100, "end": 104},
+        {"start": 105, "end": 109},
+        {"start": 110, "end": 114},
+    ], subs[0]
+
+
+def test_word_timings_clamp_to_clip():
+    tw = _load("transcribe_worker")
+    words = [{"word": "tail", "start": 3.0, "end": 3.8}]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=35,
+        fps=10, trim_start_s=0.0,
+        max_chars=42, max_lines=2, max_gap_s=1.0,
+        rm_punct=False, lang="en",
+    )
+    assert subs[0]["words"] == [{"start": 30, "end": 35}], subs[0]
+
+
+def test_word_timings_drop_words_outside_clip():
+    tw = _load("transcribe_worker")
+    words = [
+        {"word": "ok", "start": 0.0, "end": 0.1},
+        {"word": "later", "start": 2.0, "end": 2.1},
+    ]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=15,
+        fps=10, trim_start_s=0.0,
+        max_chars=42, max_lines=2, max_gap_s=10.0,
+        rm_punct=False, lang="en",
+    )
+    assert len(subs) == 1, subs
+    for word in subs[0].get("words", []):
+        assert subs[0]["frame_start"] <= word["start"] < word["end"] <= subs[0]["frame_end"], \
+            (subs[0], word)
+    assert subs[0]["words"] == [{"start": 0, "end": 1}], subs[0]
+
+
+def test_word_timings_skip_punctuation_only_tokens():
+    tw = _load("transcribe_worker")
+    words = [
+        {"word": "Hello,", "start": 0.0, "end": 0.3},
+        {"word": "...", "start": 0.3, "end": 0.5},
+        {"word": "world!", "start": 0.5, "end": 0.8},
+    ]
+    subs = tw._words_to_subtitles(
+        words, clip_frame_start=0, clip_frame_end=1000,
+        fps=10, trim_start_s=0.0,
+        max_chars=42, max_lines=2, max_gap_s=1.0,
+        rm_punct=True, lang="en",
+    )
+    assert len(subs) == 1, subs
+    assert [w["start"] for w in subs[0]["words"]] == [0, 5], subs[0]
+
+
 def test_words_to_subtitles_rm_punct_keeps_case():
     # Text case is owned by the add-on now; the worker only strips punctuation,
     # and it must do so AFTER using punctuation for break decisions.
