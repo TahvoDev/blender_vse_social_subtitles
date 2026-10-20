@@ -9,8 +9,9 @@ Blender's process.
 
 Every file the add-on writes lives under the extension's per-user data dir
 (``bpy.utils.extension_path_user``): the venv, uv, the uv wheel cache, the
-speech models and the transient job scratch dir. Nothing is written into the
-add-on folder (Blender replaces it on update) or the shared system temp.
+speech models, saved presets and the transient job scratch dir. Nothing is
+written into the add-on folder (Blender replaces it on update) or the shared
+system temp.
 
 All network access is gated on Blender's "Allow Online Access" preference
 (bpy.app.online_access).
@@ -181,11 +182,38 @@ def migrate_legacy_cache():
 
 
 def purge_data() -> bool:
+    """Remove downloaded data, keeping user-created presets."""
     target = data_dir()
     legacy = legacy_cache_dir()
+    keep = target / "presets.json"
+    saved = None
+    if keep.exists():
+        try:
+            saved = keep.read_bytes()
+        except OSError as exc:
+            print(f"[bootstrap] could not preserve presets: {exc}")
+            return False
+
     shutil.rmtree(target, ignore_errors=True)
     shutil.rmtree(legacy, ignore_errors=True)
-    return not target.exists() and not legacy.exists()
+
+    restored = True
+    if saved is not None:
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            keep.write_bytes(saved)
+        except OSError as exc:
+            print(f"[bootstrap] could not restore presets: {exc}")
+            restored = False
+
+    try:
+        leftover = (
+            any(path.name != keep.name for path in target.iterdir())
+            if target.exists() else False
+        )
+    except OSError:
+        leftover = True
+    return restored and not leftover and not legacy.exists()
 
 
 def venv_dir() -> Path:

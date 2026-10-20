@@ -38,7 +38,7 @@ def _assert_temp_calls_are_scoped():
     """
     import ast
     for name in ("bootstrap.py", "__init__.py", "transcribe_worker.py",
-                 "align_wav2vec2.py"):
+                 "align_wav2vec2.py", "presets.py"):
         tree = ast.parse((Path(__file__).parent / name).read_text(encoding="utf-8"),
                          filename=name)
         for node in ast.walk(tree):
@@ -57,6 +57,7 @@ os.environ["XDG_CACHE_HOME"] = str(tmp / "cache")
 
 try:
     import bootstrap
+    import presets
 
     data = bootstrap.data_dir()
     legacy = bootstrap.legacy_cache_dir()
@@ -64,6 +65,7 @@ try:
 
     assert data == tmp / "data" / "auto_subtitles", data
     assert legacy == tmp / "cache" / "auto_subtitles", legacy
+    assert presets.default_path(data) == data / "presets.json"
 
     (legacy / "bin").mkdir(parents=True)
     (legacy / "uv-cache" / "wheels").mkdir(parents=True)
@@ -102,15 +104,21 @@ try:
                 "PYTORCH_PRETRAINED_BERT_CACHE"):
         assert key not in env, f"inherited {key} must be stripped"
 
+    # purge_data removes downloads but keeps user-created presets.
+    preset_file = data / "presets.json"
+    preset_file.write_text('{"schema": 1, "presets": {"A": {}}}', encoding="utf-8")
     scratch = bootstrap.tmp_dir() / "blender_job.json"
     assert scratch.exists(), "job scratch must still exist before purge"
     assert bootstrap.purge_data() is True
-    assert not data.exists(), "user-data dir must be removed"
+    assert preset_file.exists(), "saved presets must survive purge"
+    assert list(data.iterdir()) == [preset_file], list(data.iterdir())
     assert not scratch.exists(), "job scratch must be gone"
     assert not legacy.exists(), "legacy cache dir must be removed"
     assert (hf_shared / "hub" / "blob").exists(), "shared HF cache must be untouched"
 
+    # purge is safe to call repeatedly and still keeps presets.
     assert bootstrap.purge_data() is True
+    assert preset_file.exists(), "saved presets must survive repeated purge"
 
     nv = data / "venv" / "lib" / "python3.11" / "site-packages" / "nvidia"
     cub = nv / "cublas" / "lib"

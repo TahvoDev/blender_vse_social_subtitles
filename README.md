@@ -53,7 +53,8 @@ archive root, then install that zip the same way:
 
 ```bash
 zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
-    transcribe_worker.py align_wav2vec2.py requirements.in LICENSE THIRDPARTY.md
+    presets.py transcribe_worker.py align_wav2vec2.py requirements.in \
+    caption_rules/defaults.json caption_rules/en.json LICENSE THIRDPARTY.md
 ```
 
 </details>
@@ -65,7 +66,8 @@ zip -r auto_subtitles.zip blender_manifest.toml __init__.py bootstrap.py \
 1. Open the **Video Sequence Editor**, select one or more **SOUND** or **MOVIE**
    strips.
 2. Open the **N-panel** (`N`) → **Auto-Subtitles** tab.
-3. Configure options, then click **Generate Subtitles**.
+3. Configure options — or save/load them with the **Presets** menu — then click
+   **Generate Subtitles**.
 4. On the first run the add-on downloads the speech engine (~3.2 GB) and the
    model weights into a private venv, showing progress in the panel, then
    transcribes automatically. This one-time step takes a few minutes; later
@@ -87,8 +89,8 @@ Blender process                     worker process (private venv)
 - `bootstrap.py` uses [uv](https://github.com/astral-sh/uv) to create a venv
   from Blender's own Python and install the pinned dependencies in
   `requirements.in`. **Everything the add-on writes — the venv, uv and its
-  wheel cache, the whisper/wav2vec2 models, and the transient job scratch
-  files — lives in the per-extension user data dir**
+  wheel cache, the whisper/wav2vec2 models, saved presets, and the transient
+  job scratch files — lives in the per-extension user data dir**
   (`bpy.utils.extension_path_user`), so it never writes into
   the add-on folder, the shared system temp, or `~/.cache`, and survives
   add-on updates.
@@ -118,6 +120,24 @@ the venv. The next **Generate Subtitles** rebuilds it automatically.
 | Max Gap (frames) | How long a subtitle lingers after the last word; also splits blocks on longer silences |
 | Text Case | Default / UPPERCASE / lowercase / Title Case |
 | Remove Punctuation | Strip punctuation from output text |
+| Presets | Save the current settings under a name, or apply a saved preset |
+
+### Presets
+
+The **Presets** row at the top of the panel saves and loads the subtitle
+settings: model, language, text channel, max chars/line, max lines, max gap,
+text case and punctuation removal. The compute device is not part of a preset
+because it is a global add-on preference.
+
+- Presets are global: they are shared by every `.blend` file and survive
+  Blender restarts.
+- Click the **+** button to save the current settings. Saving an existing name
+  overwrites it; the status message says the preset was updated.
+- Select a name from the **Presets** menu to apply it. Loading is a single undo
+  step, so `Ctrl+Z` restores the previous settings.
+- Use **Presets → Delete Preset…** to remove one; it asks for confirmation.
+- Presets are stored in the extension's user-data dir. **Remove Downloaded
+  Data** keeps them; removing the extension deletes them.
 
 ### Device (Add-on Preferences)
 
@@ -163,12 +183,13 @@ download is the same size either way.
 Removing the extension (**Edit → Preferences → Add-ons → Extensions →
 Remove**) deletes everything it wrote: Blender automatically removes the
 extension's user data dir, which contains the venv, uv, the wheel cache, the
-speech models and the job scratch files. Nothing is written into the add-on
-folder itself, the shared system temp, or the shared HuggingFace cache.
+speech models, saved presets and the job scratch files. Nothing is written into
+the add-on folder itself, the shared system temp, or the shared HuggingFace
+cache.
 
 To free disk space without removing the extension, use **Remove Downloaded
 Data** in **Edit → Preferences → Add-ons → Auto-Subtitles** (it re-downloads
-automatically on the next **Generate Subtitles**).
+automatically on the next **Generate Subtitles**). Saved presets are kept.
 
 Notes:
 
@@ -221,6 +242,7 @@ Run the self-checks (no dependencies required; torch tests are skipped if
 absent):
 
 ```bash
+python3 test_presets.py
 python3 test_worker.py
 python3 test_paths.py
 ```

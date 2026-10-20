@@ -47,6 +47,12 @@ jobs:
             exit 1
           fi
 
+      - name: Run tests
+        run: |
+          python3 test_presets.py
+          python3 test_paths.py
+          python3 test_worker.py
+
       - name: Build extension package
         id: build
         env:
@@ -57,7 +63,8 @@ jobs:
           # Files shipped in the extension package (Blender reads the manifest
           # at the archive root). Keep in sync when modules are added.
           files = ["blender_manifest.toml", "__init__.py", "bootstrap.py",
-                   "transcribe_worker.py", "align_wav2vec2.py", "requirements.in",
+                   "presets.py", "transcribe_worker.py", "align_wav2vec2.py",
+                   "requirements.in",
                    "caption_rules/defaults.json", "caption_rules/en.json",
                    "LICENSE", "THIRDPARTY.md"]
           missing = [f for f in files if not os.path.exists(f)]
