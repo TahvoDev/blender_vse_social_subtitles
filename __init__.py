@@ -18,9 +18,10 @@ import subprocess
 from pathlib import Path
 
 try:
-    from . import bootstrap
+    from . import bootstrap, presets
 except ImportError:  # direct execution / legacy layout
     import bootstrap
+    import presets
 
 
 def _get_strips_all(scene):
@@ -191,6 +192,59 @@ CASES = [
     ("lower",   "lowercase",  ""),
     ("title",   "Title Case", ""),
 ]
+
+_ENUM_VALUES = {
+    "as_model":     {value for value, _label, _desc in MODELS},
+    "as_language":  {value for value, _label, _desc in LANGUAGES},
+    "as_text_case": {value for value, _label, _desc in CASES},
+}
+
+_INT_RANGES = {
+    "as_channel":    (1, 128),
+    "as_max_chars":  (10, 120),
+    "as_max_lines":  (1, 5),
+    "as_max_gap_fr": (1, 500),
+}
+
+
+def _presets_path():
+    return presets.default_path(bootstrap.data_dir())
+
+
+def _validated_preset(values):
+    clean = {}
+    for key in presets.SETTINGS:
+        if key not in values:
+            continue
+        value = values[key]
+
+        allowed = _ENUM_VALUES.get(key)
+        if allowed is not None:
+            if isinstance(value, str) and value in allowed:
+                clean[key] = value
+            else:
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+            continue
+
+        limits = _INT_RANGES.get(key)
+        if limits is not None:
+            if isinstance(value, bool) or not isinstance(value, int):
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+                continue
+            low, high = limits
+            clean[key] = max(low, min(high, value))
+            continue
+
+        if key == "as_rm_punct":
+            if isinstance(value, bool):
+                clean[key] = value
+            else:
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+    return clean
+
+
+def _apply_preset(scene, values):
+    return presets.apply_values(scene, _validated_preset(values))
 
 
 def _register_props():
@@ -659,6 +713,126 @@ class AS_OT_PurgeData(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class AS_OT_SavePreset(bpy.types.Operator):
+    bl_idname      = "as.save_preset"
+    bl_label       = "Save Preset"
+    bl_description = "Save the current subtitle settings as a preset"
+
+    name: bpy.props.StringProperty(name="Preset Name")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, ctx):
+        name = self.name.strip()
+        if not name:
+            self.report({"ERROR"}, "Preset name cannot be empty")
+            return {"CANCELLED"}
+
+        path = _presets_path()
+        store = presets.load_presets(path)
+        existed = name in store
+        store[name] = presets.snapshot(ctx.scene)
+        try:
+            presets.save_presets(path, store)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not save preset: {exc}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Preset '{name}' {'updated' if existed else 'saved'}")
+        return {"FINISHED"}
+
+
+class AS_OT_LoadPreset(bpy.types.Operator):
+    bl_idname      = "as.load_preset"
+    bl_label       = "Load Preset"
+    bl_description = "Apply a saved subtitle settings preset"
+    bl_options     = {"REGISTER", "UNDO"}
+
+    name: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def execute(self, ctx):
+        store = presets.load_presets(_presets_path())
+        values = store.get(self.name)
+        if values is None:
+            self.report({"WARNING"}, f"Preset '{self.name}' not found")
+            return {"CANCELLED"}
+
+        applied = _apply_preset(ctx.scene, values)
+        if not applied:
+            self.report({"WARNING"}, f"Preset '{self.name}' has no valid settings")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Preset '{self.name}' loaded")
+        return {"FINISHED"}
+
+
+class AS_OT_DeletePreset(bpy.types.Operator):
+    bl_idname      = "as.delete_preset"
+    bl_label       = "Delete Preset"
+    bl_description = "Delete a saved subtitle settings preset"
+
+    name: bpy.props.StringProperty(options={"HIDDEN"})
+
+    def invoke(self, context, event):
+        if not self.name:
+            return {"CANCELLED"}
+        return context.window_manager.invoke_confirm(self, event)
+
+    def execute(self, ctx):
+        path = _presets_path()
+        store = presets.load_presets(path)
+        if self.name not in store:
+            self.report({"WARNING"}, f"Preset '{self.name}' not found")
+            return {"CANCELLED"}
+
+        del store[self.name]
+        try:
+            presets.save_presets(path, store)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not delete preset: {exc}")
+            return {"CANCELLED"}
+
+        self.report({"INFO"}, f"Preset '{self.name}' deleted")
+        return {"FINISHED"}
+
+
+class AS_MT_PresetMenu(bpy.types.Menu):
+    bl_idname = "AS_MT_preset_menu"
+    bl_label  = "Presets"
+
+    def draw(self, ctx):
+        layout = self.layout
+        store = presets.load_presets(_presets_path())
+        if not store:
+            layout.label(text="No presets saved", icon="INFO")
+            return
+        for name in store:
+            op = layout.operator("as.load_preset", text=name)
+            op.name = name
+        layout.separator()
+        layout.menu("AS_MT_delete_preset_menu", text="Delete Preset…")
+
+
+class AS_MT_DeletePresetMenu(bpy.types.Menu):
+    bl_idname = "AS_MT_delete_preset_menu"
+    bl_label  = "Delete Preset"
+
+    def draw(self, ctx):
+        layout = self.layout
+        store = presets.load_presets(_presets_path())
+        if not store:
+            layout.label(text="No presets saved", icon="INFO")
+            return
+        for name in store:
+            op = layout.operator("as.delete_preset", text=name)
+            op.name = name
+
+
+# ---------------------------------------------------------------------------
+# Panel
+# ---------------------------------------------------------------------------
+
 class AS_PT_Panel(bpy.types.Panel):
     bl_label       = "Auto-Subtitles"
     bl_idname      = "AS_PT_Panel"
@@ -701,6 +875,14 @@ class AS_PT_Panel(bpy.types.Panel):
         if _job.status == "Done!":
             layout.box().label(text="Subtitles created", icon="CHECKMARK")
 
+        # --- Presets ----------------------------------------------------
+        row = layout.row(align=True)
+        row.menu("AS_MT_preset_menu", text="Presets", icon="PRESET")
+        row.operator("as.save_preset", text="", icon="ADD")
+
+        layout.separator()
+
+        # --- Transcription ----------------------------------------------
         col = layout.column(align=True)
         col.label(text="Transcription", icon="SPEAKER")
         col.prop(scene, "as_model")
@@ -739,7 +921,9 @@ class AS_PT_Panel(bpy.types.Panel):
 
 
 CLASSES = [AS_AddonPreferences, AS_OT_Transcribe, AS_OT_Cancel,
-           AS_OT_PurgeData, AS_PT_Panel]
+           AS_OT_PurgeData, AS_OT_SavePreset, AS_OT_LoadPreset,
+           AS_OT_DeletePreset, AS_MT_PresetMenu, AS_MT_DeletePresetMenu,
+           AS_PT_Panel]
 
 
 def register():
