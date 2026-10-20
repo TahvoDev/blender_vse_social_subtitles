@@ -14,8 +14,7 @@
       "blender_version_min": "5.0.0",
       "maintainer": "TahvoDev",
       "tags": [
-        "Sequencer",
-        "Audio"
+        "Sequencer"
       ],
       "license": [
         "SPDX:GPL-3.0-or-later"

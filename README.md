@@ -132,7 +132,7 @@ because it is a global add-on preference.
 - Presets are global: they are shared by every `.blend` file and survive
   Blender restarts.
 - Click the **+** button to save the current settings. Saving an existing name
-  overwrites it silently and reports the update.
+  overwrites it; the status message says the preset was updated.
 - Select a name from the **Presets** menu to apply it. Loading is a single undo
   step, so `Ctrl+Z` restores the previous settings.
 - Use **Presets → Delete Preset…** to remove one; it asks for confirmation.
@@ -242,6 +242,7 @@ Run the self-checks (no dependencies required; torch tests are skipped if
 absent):
 
 ```bash
+python3 test_presets.py
 python3 test_worker.py
 python3 test_paths.py
 ```

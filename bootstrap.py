@@ -187,27 +187,33 @@ def purge_data() -> bool:
     legacy = legacy_cache_dir()
     keep = target / "presets.json"
     saved = None
-    try:
-        if keep.exists():
+    if keep.exists():
+        try:
             saved = keep.read_bytes()
-    except OSError as exc:
-        print(f"[bootstrap] could not preserve presets: {exc}")
+        except OSError as exc:
+            print(f"[bootstrap] could not preserve presets: {exc}")
+            return False
 
     shutil.rmtree(target, ignore_errors=True)
     shutil.rmtree(legacy, ignore_errors=True)
 
+    restored = True
     if saved is not None:
         try:
             target.mkdir(parents=True, exist_ok=True)
             keep.write_bytes(saved)
         except OSError as exc:
             print(f"[bootstrap] could not restore presets: {exc}")
+            restored = False
 
-    leftover = (
-        any(path.name != keep.name for path in target.iterdir())
-        if target.exists() else False
-    )
-    return not leftover and not legacy.exists()
+    try:
+        leftover = (
+            any(path.name != keep.name for path in target.iterdir())
+            if target.exists() else False
+        )
+    except OSError:
+        leftover = True
+    return restored and not leftover and not legacy.exists()
 
 
 def venv_dir() -> Path:

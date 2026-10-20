@@ -47,6 +47,12 @@ jobs:
             exit 1
           fi
 
+      - name: Run tests
+        run: |
+          python3 test_presets.py
+          python3 test_paths.py
+          python3 test_worker.py
+
       - name: Build extension package
         id: build
         env:

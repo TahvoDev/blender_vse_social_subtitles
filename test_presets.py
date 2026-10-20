@@ -97,6 +97,49 @@ def test_wrong_schema_is_empty():
             "presets": {"A": {"as_model": "base"}},
         }), encoding="utf-8")
         assert p.load_presets(path) == {}
+        try:
+            p.load_presets(path, strict=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("strict load must reject an unsupported schema")
+
+
+def test_strict_load_rejects_corrupt_file():
+    p = _load("presets")
+    with tempfile.TemporaryDirectory(prefix="as_presets_") as tmp:
+        path = Path(tmp) / "presets.json"
+        path.write_text("{not json", encoding="utf-8")
+        try:
+            p.load_presets(path, strict=True)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("strict load must reject corrupt JSON")
+
+
+def test_validate_clamps_and_rejects():
+    p = _load("presets")
+    enums = {
+        "as_model": {"base", "small"},
+        "as_text_case": {"upper"},
+    }
+    ranges = {
+        "as_channel": (1, 128),
+        "as_max_chars": (10, 120),
+    }
+    values = {
+        "as_model": "bogus",
+        "as_channel": 999,
+        "as_max_chars": "x",
+        "as_rm_punct": 1,
+        "as_text_case": "upper",
+    }
+    clean = p.validate(values, enums, ranges, ("as_rm_punct",))
+    assert clean == {"as_channel": 128, "as_text_case": "upper"}, clean
+    assert p.validate(
+        {"as_rm_punct": True}, {}, {}, ("as_rm_punct",)
+    ) == {"as_rm_punct": True}
 
 
 def test_unknown_and_malformed_entries_are_dropped():

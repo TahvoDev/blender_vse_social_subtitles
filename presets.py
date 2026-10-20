@@ -32,29 +32,41 @@ def default_path(data_dir) -> Path:
     return Path(data_dir) / FILENAME
 
 
-def load_presets(path) -> dict:
-    """Return {name: settings}; tolerate missing, corrupt or old files."""
+def load_presets(path, strict=False) -> dict:
+    """Return {name: settings}; tolerate missing, corrupt or old files.
+
+    With strict=True, unreadable or unsupported files raise ValueError instead
+    of returning an empty store, so writers never silently replace them.
+    """
     path = Path(path)
     try:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return {}
     except (OSError, ValueError) as exc:
+        if strict:
+            raise
         print(f"[Auto-Subtitles] Could not read presets: {exc}")
         return {}
 
     try:
         data = json.loads(raw)
     except (TypeError, ValueError) as exc:
+        if strict:
+            raise ValueError(f"Could not parse presets: {exc}") from exc
         print(f"[Auto-Subtitles] Could not parse presets: {exc}")
         return {}
 
     if not isinstance(data, dict) or data.get("schema") != SCHEMA_VERSION:
+        if strict:
+            raise ValueError("Unsupported presets format")
         print("[Auto-Subtitles] Ignoring presets with an unsupported format")
         return {}
 
     stored = data.get("presets")
     if not isinstance(stored, dict):
+        if strict:
+            raise ValueError("Presets file has no preset table")
         return {}
 
     presets = {}
@@ -110,3 +122,36 @@ def apply_values(target, values) -> int:
         except Exception as exc:
             print(f"[Auto-Subtitles] Could not apply preset field {key}: {exc}")
     return applied
+
+
+def validate(values, enums, ranges, bool_keys=()) -> dict:
+    """Keep valid preset values, clamping integers and dropping bad fields."""
+    clean = {}
+    for key in SETTINGS:
+        if key not in values:
+            continue
+        value = values[key]
+
+        allowed = enums.get(key)
+        if allowed is not None:
+            if isinstance(value, str) and value in allowed:
+                clean[key] = value
+            else:
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+            continue
+
+        limits = ranges.get(key)
+        if limits is not None:
+            if isinstance(value, bool) or not isinstance(value, int):
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+                continue
+            low, high = limits
+            clean[key] = max(low, min(high, value))
+            continue
+
+        if key in bool_keys:
+            if isinstance(value, bool):
+                clean[key] = value
+            else:
+                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
+    return clean

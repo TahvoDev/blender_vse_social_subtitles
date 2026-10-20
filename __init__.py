@@ -212,35 +212,9 @@ def _presets_path():
 
 
 def _validated_preset(values):
-    clean = {}
-    for key in presets.SETTINGS:
-        if key not in values:
-            continue
-        value = values[key]
-
-        allowed = _ENUM_VALUES.get(key)
-        if allowed is not None:
-            if isinstance(value, str) and value in allowed:
-                clean[key] = value
-            else:
-                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
-            continue
-
-        limits = _INT_RANGES.get(key)
-        if limits is not None:
-            if isinstance(value, bool) or not isinstance(value, int):
-                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
-                continue
-            low, high = limits
-            clean[key] = max(low, min(high, value))
-            continue
-
-        if key == "as_rm_punct":
-            if isinstance(value, bool):
-                clean[key] = value
-            else:
-                print(f"[Auto-Subtitles] Ignoring invalid {key}: {value!r}")
-    return clean
+    return presets.validate(
+        values, _ENUM_VALUES, _INT_RANGES, ("as_rm_punct",)
+    )
 
 
 def _apply_preset(scene, values):
@@ -730,7 +704,12 @@ class AS_OT_SavePreset(bpy.types.Operator):
             return {"CANCELLED"}
 
         path = _presets_path()
-        store = presets.load_presets(path)
+        try:
+            store = presets.load_presets(path, strict=True)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not read presets: {exc}")
+            return {"CANCELLED"}
+
         existed = name in store
         store[name] = presets.snapshot(ctx.scene)
         try:
@@ -781,7 +760,12 @@ class AS_OT_DeletePreset(bpy.types.Operator):
 
     def execute(self, ctx):
         path = _presets_path()
-        store = presets.load_presets(path)
+        try:
+            store = presets.load_presets(path, strict=True)
+        except Exception as exc:
+            self.report({"ERROR"}, f"Could not read presets: {exc}")
+            return {"CANCELLED"}
+
         if self.name not in store:
             self.report({"WARNING"}, f"Preset '{self.name}' not found")
             return {"CANCELLED"}
@@ -807,7 +791,7 @@ class AS_MT_PresetMenu(bpy.types.Menu):
         if not store:
             layout.label(text="No presets saved", icon="INFO")
             return
-        for name in store:
+        for name in sorted(store):
             op = layout.operator("as.load_preset", text=name)
             op.name = name
         layout.separator()
@@ -824,7 +808,7 @@ class AS_MT_DeletePresetMenu(bpy.types.Menu):
         if not store:
             layout.label(text="No presets saved", icon="INFO")
             return
-        for name in store:
+        for name in sorted(store):
             op = layout.operator("as.delete_preset", text=name)
             op.name = name
 
